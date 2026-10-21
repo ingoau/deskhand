@@ -1,6 +1,6 @@
 #!/bin/bash
 # Run a command with the desktop session environment (see deskhand-entrypoint).
-# Usage: session [--wait-x] [--wait-dbus] cmd args...
+# Usage: session [--wait-x] [--wait-dbus] [--wait-panel] cmd args...
 set -a
 . /run/deskhand/session.env
 . /run/deskhand/screen.env
@@ -13,6 +13,12 @@ while [ $# -gt 0 ]; do
       shift ;;
     --wait-dbus)
       for _ in $(seq 1 300); do [ -S "${DBUS_SESSION_BUS_ADDRESS#unix:path=}" ] && break; sleep 0.1; done
+      shift ;;
+    --wait-panel)
+      # The daemon waits for the panel (up to 15 s): otherwise it reports healthy, desktop_start returns,
+      # and an agent's first click on a launcher lands before tint2 handles input and is lost (phase 2).
+      for _ in $(seq 1 150); do xdotool search --classname tint2 >/dev/null 2>&1 && break; sleep 0.1; done
+      sleep 0.3
       shift ;;
     *) break ;;
   esac

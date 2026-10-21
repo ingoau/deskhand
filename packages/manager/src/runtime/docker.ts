@@ -9,6 +9,9 @@ import { DAEMON_PORT, DeskhandError, LABELS } from "@deskhand/shared";
 import type { Config } from "../config.js";
 import type { ContainerInfo, ContainerStats, DesktopSpec, ExecOptions, ExecResult, HostInfo, ImageInfo, PathResolution, Runtime } from "./types.js";
 
+/** Holds the daemon key inside a desktop; mounted as a tmpfs so commits never include it. */
+export const DESKTOP_RUNTIME_DIR = "/run/deskhand";
+
 /** Maps dockerode/engine errors onto deskhand error codes. */
 export function mapDockerError(e: unknown, fallback: "internal" | "image_pull_failed" = "internal"): DeskhandError {
   if (e instanceof DeskhandError) return e;
@@ -217,6 +220,10 @@ export class DockerRuntime implements Runtime {
           NanoCpus: Math.round(spec.cpus * 1e9),
           ShmSize: 1024 ** 3,
           ...(securityOpt ? { SecurityOpt: securityOpt } : {}),
+          // The daemon key (and session env) live in /run/deskhand; as a tmpfs it is never captured by
+          // `docker commit`, so template images cannot carry a desktop's key. 0755: agent processes source
+          // session.env/screen.env from it (the entrypoint sets that mode anyway); the key file itself is 0600 root.
+          Tmpfs: { [DESKTOP_RUNTIME_DIR]: "rw,nosuid,nodev,noexec,size=4m,mode=0755,uid=0,gid=0" },
           Binds: spec.binds.map((b) => `${b.source}:${b.target}:${b.write ? "rw" : "ro"}`),
           RestartPolicy: { Name: "no" },
         },

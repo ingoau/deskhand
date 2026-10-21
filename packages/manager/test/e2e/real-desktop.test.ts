@@ -91,10 +91,14 @@ async function state(id: string): Promise<DaemonState> {
   return (await daemonOf(id)).state();
 }
 
-/** Opens Chromium like an agent would: click its panel launcher (bottom left), ctrl+l, type the URL, Enter. */
+/**
+ * Opens Chromium like an agent would: click its panel launcher (bottom left) — once, and possibly right
+ * after desktop_start, which caught two image bugs (fd-closing tint2; daemon ready before the panel) —
+ * then ctrl+l, type the URL, Enter.
+ */
 async function browse(s: Mcp, desktop: string, target: string, title: string) {
   await call(s, "left_click", { desktop, coordinate: [16, 785] });
-  await waitFor(async () => /chromium/i.test((await state(desktop)).title ?? ""), { timeout: 60_000, interval: 500, what: `Chromium window on ${desktop}` });
+  await waitFor(async () => /chromium/i.test((await state(desktop)).title ?? ""), { timeout: 60_000, interval: 500, what: `Chromium window on ${desktop} after one launcher click` });
   await call(s, "key", { desktop, text: "ctrl+l" });
   await call(s, "type", { desktop, text: target });
   await call(s, "key", { desktop, text: "Return" });
@@ -200,7 +204,10 @@ describe("real manager + real desktop image", () => {
       expect(sec.some((o) => o.startsWith("seccomp={"))).toBe(true);
       expect(sec).toContain("apparmor=unconfined");
       expect(c.HostConfig.ShmSize).toBe(1024 ** 3);
+      expect(Object.keys(c.HostConfig.Tmpfs ?? {})).toContain("/run/deskhand"); // the key never lands in a commit
     }
+    const keyDir = await exec(a, ida, "findmnt -n -o FSTYPE /run/deskhand; stat -c '%a %U' /run/deskhand/key; cat /run/deskhand/key 2>&1 | head -c 60");
+    expect(keyDir.out).toMatch(/stdout:\ntmpfs\n600 root\ncat: \/run\/deskhand\/key: Permission denied/);
 
     // Read-only is enforced; the writable mount gets the agent's file, owned by the host user.
     const denied = await exec(a, ida, `touch ${ro}/nope`);
