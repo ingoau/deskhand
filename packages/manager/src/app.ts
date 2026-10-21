@@ -7,7 +7,7 @@ import multipart from "@fastify/multipart";
 import { pino, type Logger } from "pino";
 import { ZodError } from "zod";
 import { DeskhandError, ERROR_MESSAGES } from "@deskhand/shared";
-import { McpService } from "@deskhand/mcp";
+import { McpService, registerBrowserTools, type BrowserProvider } from "@deskhand/mcp";
 import type { Config } from "./config.js";
 import { openDb, type DB } from "./db.js";
 import { AuthService, type Principal } from "./auth.js";
@@ -21,6 +21,7 @@ import { DockerRuntime } from "./runtime/docker.js";
 import { FakeRuntime } from "./runtime/fake.js";
 import { registerRoutes } from "./routes.js";
 import { registerStatic } from "./static.js";
+import { PlaywrightBrowsers, listPlaywrightTools } from "./browser.js";
 
 declare module "fastify" {
   interface FastifyRequest {
@@ -32,6 +33,8 @@ export interface ManagerDeps {
   runtime?: Runtime;
   logger?: Logger;
   db?: DB;
+  /** Replaces the Playwright-backed browser provider (tests). */
+  browser?: BrowserProvider;
 }
 
 export interface Manager {
@@ -45,6 +48,8 @@ export interface Manager {
   actionLog: ActionLog;
   mcp: McpService;
   backend: ManagerMcpBackend;
+  /** The Playwright MCP connections behind browser_* (null when DESKHAND_BROWSER_TOOLS=off or a test provider is used). */
+  browsers: PlaywrightBrowsers | null;
   logger: Logger;
   /** Origin used for printed links, e.g. http://127.0.0.1:7480 */
   publicOrigin(): string;
@@ -66,6 +71,12 @@ export async function createManager(cfg: Config, deps: ManagerDeps = {}): Promis
   const files = new FileService(cfg, runtime, policy, desktops);
   const backend = new ManagerMcpBackend(cfg, db, auth, desktops, templates, actionLog, files, logger);
   const mcp = new McpService(backend, { sessionTimeoutMs: cfg.sessionTimeoutMs, sweepIntervalMs: Math.min(30_000, cfg.sweepIntervalMs), logger });
+  let browsers: PlaywrightBrowsers | null = null;
+  if (cfg.browserTools) {
+    const provider = deps.browser ?? (browsers = new PlaywrightBrowsers(cfg, desktops, logger));
+    const upstream = await listPlaywrightTools(path.join(cfg.dataDir, "playwright"));
+    registerBrowserTools(mcp.registry, upstream, provider, { lockWaitMs: cfg.lockWaitMs });
+  }
 
   const app = Fastify({
     loggerInstance: logger,
@@ -139,6 +150,7 @@ export async function createManager(cfg: Config, deps: ManagerDeps = {}): Promis
     actionLog,
     mcp,
     backend,
+    browsers,
     logger,
     publicOrigin,
     async listen() {
@@ -165,6 +177,7 @@ export async function createManager(cfg: Config, deps: ManagerDeps = {}): Promis
     },
     async close() {
       await mcp.close();
+      await browsers?.close();
       await desktops.close();
       await app.close();
       await actionLog.flush();

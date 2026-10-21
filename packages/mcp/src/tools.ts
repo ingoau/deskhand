@@ -7,6 +7,7 @@ import { z } from "zod";
 import { DeskhandError, type InputAction, type InputResponse, type TemplateSummary } from "@deskhand/shared";
 import type { DesktopRef } from "./backend.js";
 import { overlaysFor } from "./describe.js";
+import { formatUiTree, type UiTreeRoot } from "./uitree.js";
 import { text, type Content, type JsonSchema, type ToolContext, type ToolDef, type ToolOutput, type ToolRegistry } from "./registry.js";
 
 // ---------------------------------------------------------------- schema pieces
@@ -670,15 +671,25 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
   reg.register({
     name: "ui_tree",
     description:
-      "Get the accessibility tree of native apps (AT-SPI): elements with role, name, states and box [x, y, width, height] in screenshot pixels. Click an element's centre instead of estimating from pixels. `window` filters by window title substring.",
-    inputSchema: obj({ window: { type: "string", description: "Only windows whose title contains this text." }, desktop: desktopProp }),
+      "Read the accessibility tree of the desktop's windows (AT-SPI) — the precise way to work with native apps (text editors, file managers, dialogs). One line per element: role \"name\" [states] value=… @x,y box=[x,y,w,h]. @x,y is the point to click in screenshot pixels (visible part of the element, not covered by another window); click it with left_click instead of estimating from the screenshot. Windows are listed topmost first; [active] marks the focused one. `window` keeps only windows whose title or app name contains that text (case-insensitive) — use it for big trees. For web pages prefer browser_snapshot.",
+    inputSchema: obj({ window: { type: "string", description: "Only windows whose title or app name contains this text (case-insensitive)." }, desktop: desktopProp }),
     parse: z.object({ window: z.string().max(200).optional(), desktop: zDesktop }).strict(),
     scope: "desktop",
     async handler(args, ctx) {
-      const tree = await ctx.desktop!.daemon.uiTree(args.window);
-      let s = JSON.stringify(tree);
-      if (s.length > 80_000) s = s.slice(0, 80_000) + "… (truncated; pass `window` to narrow it down)";
-      return { content: [text(s)] };
+      const rd = ctx.desktop!;
+      const tree = (await rd.daemon.uiTree(args.window)) as UiTreeRoot;
+      const out = formatUiTree(tree, { screen: rd.desktop.screen, window: args.window });
+      let body = out.text;
+      if (args.window && out.windows === 0) {
+        // Say which windows exist so the agent can pick a better filter.
+        const all = (await rd.daemon.uiTree().catch(() => null)) as UiTreeRoot | null;
+        const names = (all?.children ?? []).map((w) => `${JSON.stringify(w.name || "(untitled)")} (${w.app ?? "?"})`);
+        body += names.length ? ` Open windows: ${names.join(", ")}.` : " No windows with accessible elements are open.";
+      }
+      return {
+        content: [text(body)],
+        summary: `ui_tree${args.window ? ` ${JSON.stringify(args.window)}` : ""} → ${out.windows} window${out.windows === 1 ? "" : "s"}, ${out.elements} elements${out.truncated ? " (truncated)" : ""}`,
+      };
     },
   });
 }

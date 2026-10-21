@@ -38,7 +38,8 @@ const NO_DESKTOP_ARG = new Set(["desktop_start", "desktop_list", "template_list"
 describe("MCP server", () => {
   it("lists exactly the plan's tools with the plan's parameter names", async () => {
     const { client } = await connectMcp(t.url, t.token);
-    const { tools } = await client.listTools();
+    // browser_* tools (re-exported from Playwright MCP) are checked by browser-contract.test.ts.
+    const tools = (await client.listTools()).tools.filter((x) => !x.name.startsWith("browser_"));
     expect(tools.map((x) => x.name).sort()).toEqual(Object.keys(EXPECTED).sort());
     for (const tool of tools) {
       const props = Object.keys((tool.inputSchema as { properties?: object }).properties ?? {});
