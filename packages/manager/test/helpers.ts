@@ -53,23 +53,37 @@ export async function startManager(
   opts: { env?: Record<string, string>; runtime?: Runtime; dataDir?: string; fake?: ConstructorParameters<typeof FakeRuntime>[0] } = {},
 ): Promise<TestManager> {
   const dataDir = opts.dataDir ?? tmpDir();
-  const port = await freePort();
-  const env = { ...FAST_ENV, DESKHAND_RUNTIME: "fake", DESKHAND_DATA_DIR: dataDir, DESKHAND_BIND: `127.0.0.1:${port}`, ...opts.env };
-  const cfg = parseConfig(env);
   const runtime = opts.runtime ?? new FakeRuntime({ lockWaitMs: 1000, ...opts.fake });
-  const m = await createManager(cfg, { runtime, logger: pino({ level: env.DESKHAND_LOG_LEVEL }) });
-  await m.listen();
+  let m: Manager | undefined;
+  let port = 0;
+  let cfg: ReturnType<typeof parseConfig> | undefined;
+  const env0 = { ...FAST_ENV, DESKHAND_RUNTIME: "fake", DESKHAND_DATA_DIR: dataDir, ...opts.env };
+  for (let attempt = 0; attempt < 20 && !m; attempt++) {
+    // Test files run in parallel: another one may grab the port between the check and the bind.
+    port = await freePort();
+    cfg = parseConfig({ ...env0, DESKHAND_BIND: `127.0.0.1:${port}` });
+    const candidate = await createManager(cfg, { runtime, logger: pino({ level: env0.DESKHAND_LOG_LEVEL }) });
+    try {
+      await candidate.listen();
+      m = candidate;
+    } catch (e) {
+      await candidate.close().catch(() => undefined);
+      if ((e as { code?: string }).code !== "EADDRINUSE") throw e;
+    }
+  }
+  if (!m || !cfg) throw new Error("could not bind a test port");
   const token = m.auth.createToken(`test-${Math.random().toString(36).slice(2, 8)}`).secret;
   const base = cfg.basePath;
+  const manager = m;
   return {
-    m,
+    m: manager,
     url: `http://127.0.0.1:${port}${base}`,
     base,
     token,
     runtime,
     dataDir,
     async close(o = {}) {
-      await m.close();
+      await manager.close();
       if (!o.keepData) fs.rmSync(dataDir, { recursive: true, force: true });
     },
   };

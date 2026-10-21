@@ -21,7 +21,8 @@ export function formatDuration(ms: number): string {
   if (ms % 86_400_000 === 0) return `${ms / 86_400_000} day${ms === 86_400_000 ? "" : "s"}`;
   if (ms % 3_600_000 === 0) return `${ms / 3_600_000} hour${ms === 3_600_000 ? "" : "s"}`;
   if (ms % 60_000 === 0) return `${ms / 60_000} minute${ms === 60_000 ? "" : "s"}`;
-  return `${Math.round(ms / 1000)} seconds`;
+  const s = Math.max(1, Math.round(ms / 1000));
+  return `${s} second${s === 1 ? "" : "s"}`;
 }
 
 const BYTE_UNITS: Record<string, number> = { b: 1, k: 1024, m: 1024 ** 2, g: 1024 ** 3, t: 1024 ** 4 };

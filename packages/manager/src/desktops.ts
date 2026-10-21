@@ -435,7 +435,7 @@ export class DesktopService extends EventEmitter {
 
   // ---------------------------------------------------------------- create / start
 
-  async create(opts: CreateOptions, reuse?: Desktop): Promise<Desktop> {
+  async create(opts: CreateOptions, reuse?: Desktop, hooks: { onInserted?: (id: string) => void } = {}): Promise<Desktop> {
     const tpl = reuse ? (this.templates.resolveVersion(reuse.template, reuse.templateVersion) ?? this.templates.resolve(reuse.template)) : this.templates.resolve(opts.template);
     const mounts: ResolvedMount[] = await this.policy.checkMounts(opts.mounts ?? []);
     const screen = opts.screen ?? this.cfg.screen;
@@ -491,6 +491,7 @@ export class DesktopService extends EventEmitter {
       });
       this.save(d);
       await this.runtime.start(d.containerId);
+      hooks.onInserted?.(d.id);
       await this.waitHealthy(d);
       d.status = "running";
       d.startedAt = nowIso();
@@ -700,10 +701,11 @@ export class DesktopService extends EventEmitter {
     if (!d) return;
     d.lastActivityAt = nowIso();
     this.activityDirty.add(id);
-    if (this.activityDirty.size === 1) setTimeout(() => this.flushActivity(), 1000).unref();
+    if (this.activityDirty.size === 1 && !this.stopping) setTimeout(() => this.flushActivity(), 1000).unref();
   }
 
   private flushActivity() {
+    if (this.activityDirty.size === 0 || !this.db.open) return;
     const stmt = this.db.prepare("UPDATE desktops SET last_activity_at = ? WHERE id = ?");
     for (const id of this.activityDirty) {
       const d = this.desktops.get(id);

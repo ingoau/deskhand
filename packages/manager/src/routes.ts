@@ -131,7 +131,7 @@ export async function registerRoutes(app: FastifyInstance, ctx: RouteContext): P
     if (!ok) throw new DeskhandError("unauthorized", body.code ? "That login link has expired or was already used; run `deskhand login-link` for a new one." : "That API token is not valid.");
     const s = auth.createWebSession(body.token ? "token" : "link");
     setSessionCookie(req, reply, s.value);
-    return { ok: true, expiresAt: s.expiresAt };
+    return reply.status(204).send();
   });
 
   app.post("/auth/logout", async (req, reply) => {
@@ -143,9 +143,9 @@ export async function registerRoutes(app: FastifyInstance, ctx: RouteContext): P
 
   app.post("/auth/logout-all", async (req, reply) => {
     requireOperator(req.principal);
-    const n = auth.revokeAllWebSessions();
+    auth.revokeAllWebSessions();
     clearSessionCookie(reply);
-    return { ok: true, revoked: n };
+    return reply.status(204).send();
   });
 
   // ---------------------------------------------------------------- me, system, tokens, login links
@@ -182,11 +182,11 @@ export async function registerRoutes(app: FastifyInstance, ctx: RouteContext): P
     return reply.status(201).send({ token: r.token, secret: r.secret });
   });
 
-  app.delete("/api/tokens/:id", async (req) => {
+  app.delete("/api/tokens/:id", async (req, reply) => {
     requireOperator(req.principal);
     const { id } = req.params as { id: string };
     if (!auth.revokeToken(id)) throw new DeskhandError("not_found", `No active token ${id}.`);
-    return { ok: true };
+    return reply.status(204).send();
   });
 
   app.post("/api/login-links", async (req) => {
@@ -205,19 +205,25 @@ export async function registerRoutes(app: FastifyInstance, ctx: RouteContext): P
 
   app.post("/api/desktops", async (req, reply) => {
     const body = CreateDesktopRequest.parse(req.body ?? {});
-    const d = await desktops.create({ sessionId: null, sessionLabel: null, ...body, actor: actor(req) });
-    actionLog.record({ desktopId: d.id, tool: "desktop_start", summary: `desktop_start ${d.template} (dashboard)`, outcome: "ok", actor: actor(req), session: null, args: body });
-    return reply.status(201).send(desktops.summary(d));
+    // Respond as soon as the desktop is admitted (status "starting"); it finishes starting in the background.
+    const inserted = new Promise<string>((resolve, reject) => {
+      desktops
+        .create({ sessionId: null, sessionLabel: null, ...body, actor: actor(req) }, undefined, { onInserted: resolve })
+        .then((d) => actionLog.record({ desktopId: d.id, tool: "desktop_start", summary: `desktop_start ${d.template} (dashboard)`, outcome: "ok", actor: actor(req), session: null, args: body }))
+        .catch(reject);
+    });
+    const id = await inserted;
+    return reply.status(201).send(desktops.summary(desktops.getAny(id)!));
   });
 
   app.get(D, async (req) => summaryOf(did(req)));
 
-  app.delete(D, async (req) => {
+  app.delete(D, async (req, reply) => {
     const id = did(req);
     desktops.require(id);
     await desktops.remove(id, "user");
     actionLog.record({ desktopId: id, tool: "remove", summary: "removed from the dashboard", outcome: "ok", actor: actor(req), session: null });
-    return { ok: true };
+    return reply.status(204).send();
   });
 
   app.post(`${D}/stop`, async (req) => {
@@ -245,16 +251,19 @@ export async function registerRoutes(app: FastifyInstance, ctx: RouteContext): P
 
   app.post(`${D}/lock`, async (req) => {
     const id = did(req);
-    const st = await desktops.lock(id, actor(req));
-    const shot = await desktops.daemon(desktops.require(id)).screenshotRaw({ format: "png" }).catch(() => null);
+    const d = desktops.require(id);
+    const current = await desktops.refreshState(d);
+    if (current?.lock) return { generation: current.generation, lock: current.lock }; // idempotent
+    const st = await desktops.lock(id, "dashboard");
+    const shot = await desktops.daemon(d).screenshotRaw({ format: "png" }).catch(() => null);
     actionLog.record({ desktopId: id, tool: "takeover", summary: "the user took over", outcome: "ok", actor: actor(req), session: null, screenshot: shot?.data ?? null });
-    return { ...summaryOf(id), generation: st?.generation ?? summaryOf(id).generation };
+    return { generation: st?.generation ?? 0, lock: st?.lock ?? null };
   });
 
   app.delete(`${D}/lock`, async (req) => {
     const id = did(req);
     const { note } = HandbackRequest.parse(req.body ?? {});
-    await desktops.unlock(id, note ?? null);
+    const st = await desktops.unlock(id, note ?? null);
     const shot = await desktops.daemon(desktops.require(id)).screenshotRaw({ format: "png" }).catch(() => null);
     actionLog.record({
       desktopId: id,
@@ -266,7 +275,7 @@ export async function registerRoutes(app: FastifyInstance, ctx: RouteContext): P
       session: null,
       screenshot: shot?.data ?? null,
     });
-    return summaryOf(id);
+    return { generation: st?.generation ?? 0, lock: null };
   });
 
   app.delete(`${D}/attention`, async (req) => {
@@ -360,22 +369,26 @@ export async function registerRoutes(app: FastifyInstance, ctx: RouteContext): P
   app.post(`${D}/save-as-template`, async (req) => {
     const d = desktops.require(did(req));
     const body = SaveTemplateRequest.parse(req.body ?? {});
-    return saveDesktopAsTemplate(desktops, templates, d, body, actor(req), false, ctx.logger);
+    const t = await saveDesktopAsTemplate(desktops, templates, d, body, actor(req), false, ctx.logger);
+    return { template: t, version: t.latestVersion };
   });
 
   app.get("/api/templates", async () => ({ templates: templates.list() }));
   app.get("/api/templates/:name", async (req) => templates.info((req.params as { name: string }).name));
-  app.delete("/api/templates/:name", async (req) => {
+  app.delete("/api/templates/:name", async (req, reply) => {
     await templates.delete((req.params as { name: string }).name);
-    return { ok: true };
+    return reply.status(204).send();
   });
   app.post("/api/templates/:name/rollback", async (req) => {
     const { version } = RollbackRequest.parse(req.body ?? {});
-    return templates.rollback((req.params as { name: string }).name, version);
+    const name = (req.params as { name: string }).name;
+    templates.rollback(name, version);
+    return templates.info(name);
   });
   app.post("/api/templates/:name/default", async (req) => {
-    templates.setDefault((req.params as { name: string }).name);
-    return { ok: true };
+    const name = (req.params as { name: string }).name;
+    templates.setDefault(name);
+    return templates.info(name);
   });
 
   // ---------------------------------------------------------------- live view (VNC websocket proxy)

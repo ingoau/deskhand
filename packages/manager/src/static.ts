@@ -5,7 +5,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import fastifyStatic from "@fastify/static";
 import type { Config } from "./config.js";
 
@@ -39,18 +39,20 @@ export async function registerStatic(app: FastifyInstance, cfg: Config): Promise
 
   if (root) await app.register(fastifyStatic, { root, serve: false });
 
-  app.get("/*", async (req, reply) => {
+  const handler = async (req: FastifyRequest, reply: FastifyReply) => {
     const rel = decodeURIComponent((req.url.split("?")[0] ?? "/").slice(base.length)) || "/";
     if (RESERVED.test(rel)) return reply.status(404).send({ error: { code: "not_found", message: "Not found." } });
     if (root && rel !== "/" && rel !== "/index.html") {
       const file = path.resolve(root, "." + path.posix.normalize(rel));
       if (file.startsWith(root + path.sep) && fs.existsSync(file) && fs.statSync(file).isFile()) {
         const immutable = /\/assets\//.test(rel);
-        return reply.header("cache-control", immutable ? "public, max-age=31536000, immutable" : "no-cache").sendFile(path.relative(root, file));
+        return reply.header("cache-control", immutable ? "public, max-age=31536000, immutable" : "no-cache").sendFile(path.relative(root, file), { cacheControl: false });
       }
       // Missing asset-like paths are real 404s, not the SPA.
       if (/\.[a-z0-9]{1,8}$/i.test(rel)) return reply.status(404).send({ error: { code: "not_found", message: "Not found." } });
     }
     return reply.header("cache-control", "no-cache").type("text/html; charset=utf-8").send(index());
-  });
+  };
+  app.get("/", handler);
+  app.get("/*", handler);
 }

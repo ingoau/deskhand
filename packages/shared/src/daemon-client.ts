@@ -82,7 +82,17 @@ export class DaemonClient {
     try {
       res = await fetch(this.baseUrl + path, { method, headers, body, signal });
     } catch (e) {
-      throw this.networkError(e, !!opts.mutating);
+      // A pooled keep-alive socket can be stale after a daemon restart; retry reads once.
+      const code = errCode(e);
+      if (!opts.mutating && !signal.aborted && (code === "UND_ERR_SOCKET" || code === "ECONNRESET")) {
+        try {
+          res = await fetch(this.baseUrl + path, { method, headers, body, signal });
+        } catch (e2) {
+          throw this.networkError(e2, false);
+        }
+      } else {
+        throw this.networkError(e, !!opts.mutating);
+      }
     }
     if (!res.ok) {
       let parsed: unknown;

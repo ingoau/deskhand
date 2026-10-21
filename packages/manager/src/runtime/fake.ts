@@ -255,12 +255,12 @@ export class FakeRuntime implements Runtime {
     await fs.promises.writeFile(p, data);
   }
 
-  async close() {
-    for (const c of this.containers.values()) await c.daemon?.close();
-  }
+  /** Like Docker, desktops outlive the manager: closing the runtime leaves them running (see destroy). */
+  async close() {}
 
   /** Removes everything (tests). */
   async destroy() {
+    for (const c of this.containers.values()) await c.daemon?.close();
     for (const id of [...this.containers.keys()]) await this.remove(id);
     fs.rmSync(this.root, { recursive: true, force: true });
   }

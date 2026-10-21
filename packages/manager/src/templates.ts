@@ -201,6 +201,7 @@ export class TemplateService extends EventEmitter {
   async delete(name: string): Promise<void> {
     if (name === BASE_TEMPLATE) throw new DeskhandError("invalid_argument", "The base template is built in and cannot be deleted.");
     if (!this.tplRow(name)) throw new DeskhandError("template_not_found");
+    if (this.defaultName() === name) throw new DeskhandError("invalid_argument", `"${name}" is the default template; make another template the default first.`);
     const now = nowIso();
     this.db.prepare("UPDATE templates SET deleted_at = ? WHERE name = ?").run(now, name);
     if (this.defaultName() === name) setMeta(this.db, "default_template", BASE_TEMPLATE);

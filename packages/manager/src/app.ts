@@ -1,6 +1,6 @@
 /** Composition root: wires config, DB, runtime, services, MCP and the HTTP server. */
 import path from "node:path";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { LogController, type FastifyInstance } from "fastify";
 import cookie from "@fastify/cookie";
 import websocket from "@fastify/websocket";
 import multipart from "@fastify/multipart";
@@ -69,7 +69,7 @@ export async function createManager(cfg: Config, deps: ManagerDeps = {}): Promis
 
   const app = Fastify({
     loggerInstance: logger,
-    disableRequestLogging: true,
+    logController: new LogController({ disableRequestLogging: true }),
     trustProxy: cfg.trustProxy,
     bodyLimit: 8 * 1024 * 1024,
     routerOptions: { ignoreTrailingSlash: true },
@@ -108,6 +108,17 @@ export async function createManager(cfg: Config, deps: ManagerDeps = {}): Promis
     return `http://${host}:${cfg.bind.port}`;
   };
 
+  if (cfg.basePath) {
+    // `${base}` without the trailing slash -> `${base}/` (ignoreTrailingSlash would otherwise treat them alike).
+    app.addHook("onRequest", async (req, reply) => {
+      const [p, q] = req.url.split("?");
+      if (p === cfg.basePath && (req.method === "GET" || req.method === "HEAD")) {
+        void reply.redirect(`${cfg.basePath}/${q ? `?${q}` : ""}`, 308);
+        return reply;
+      }
+    });
+  }
+
   const ctx = { cfg, auth, desktops, templates, actionLog, files, mcp, backend, runtime, logger, publicOrigin: () => publicOrigin() };
   await app.register(
     async (scope) => {
@@ -116,7 +127,6 @@ export async function createManager(cfg: Config, deps: ManagerDeps = {}): Promis
     },
     { prefix: cfg.basePath },
   );
-  if (cfg.basePath) app.get(cfg.basePath, (_req, reply) => reply.redirect(`${cfg.basePath}/`));
 
   const manager: Manager = {
     cfg,
