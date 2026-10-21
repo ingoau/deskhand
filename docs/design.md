@@ -57,8 +57,8 @@ human ──dashboard─┘   Fastify, SQLite,     │      Xvfb :0 (agent) · o
   `/etc/deskhand-versions.json` lists versions. ~1.7 GB uncompressed (amd64).
 - x11vnc gets `ulimit -n 1024`: under Docker's default nofile limit (~10⁹) it loops over every fd and never
   reaches `accept()`. Phase 2 found that tint2 had the same problem: its forked launcher child closed fds for
-  minutes, so clicking a panel launcher did nothing. The entrypoint now caps the soft nofile limit at 65536 for the
-  whole session. The hard limit is unchanged, so Chromium can still raise its own.
+  minutes, so clicking a panel launcher did nothing. The entrypoint caps the open-file limit for the whole session
+  (since phase 6: soft 1024 / hard 524288, see "Opt-in hardware"); programs that need more raise their soft limit.
 - `/run/deskhand` (key, session.env, screen.env) is a **tmpfs** created by the manager (`HostConfig.Tmpfs`, mode
   0755 root; the key file is 0600 root). `docker commit` never captures tmpfs contents, so template images cannot
   contain a desktop's key. The directory stays 0755, not 0700, because agent processes source the env files in it.
@@ -508,3 +508,67 @@ overrides and capping), `cli.test.ts` (`start --memory --cpus --kvm`), dashboard
 markers), and the real-image e2e `packages/manager/test/e2e/hardware.e2e.test.ts`:
 `DEV_DOCKER=1 scripts/dev env DESKHAND_E2E_IMAGE=deskhand-desktop:dev-kvm pnpm --filter @deskhand/manager exec vitest
 run test/e2e/hardware.e2e.test.ts`. Reliability suite: `suite/tasks/android-emulator.json` (slow, expensive).
+
+## Install, upgrades and remote access (phase 6)
+
+User docs: `docs/quickstart.md`, `docs/remote-access.md`, `docs/configuration.md`, `docs/security.md`.
+
+- **Upgrades: desktops switch images when they next start (decision).** The plan says each desktop "switches to the
+  new desktop image at its next restart", but `docker start` reuses a container's image, so phase 2 desktops never
+  switched. `DesktopService.ensureRunning` now calls `recreateOnCurrentImage` first. It resolves the desktop's
+  template version to an image: for `base` that is `DESKHAND_DESKTOP_IMAGE`, which changes with the manager's
+  version or with a `docker compose pull` of the same tag. It compares that image's id with the container's
+  `imageId`. If they differ, it:
+  1. renames the old container to `<name>-replaced-<rand>`;
+  2. creates a new one with the same id, name, labels, env (daemon key), mounts and per-desktop hardware;
+  3. copies `/home/agent` across with the archive API. The tar stream is filtered: mount points under the home and
+     `~/.cache` are skipped, so host files are never copied into a container layer or written back through a bind;
+  4. starts it, waits for health, and only then removes the old container.
+
+  Any failure removes the new container, renames the old one back and starts it as before; the desktop never loses
+  its files. The agent's next result says the desktop now runs the new image and that `/home/agent` was kept.
+  Rationale for copying the home rather than keeping it in a named volume: a volume would be invisible to
+  `docker commit`, which breaks save-as-template for exactly those desktops. The agent can only write its home and
+  temp directories anyway (no root, no package installs outside recipes), so the home is the state worth keeping.
+  Running desktops are never touched, and neither are desktops from saved template versions: those are their own
+  images, rebuilt by the recipe mechanism (phase 4). A manager that dies mid-recreation is cleaned up on the next
+  start (`resolveParked`): the parked container goes if its replacement got as far as starting (files are copied
+  before the start), otherwise the replacement goes and the parked one is renamed back. Runtime additions:
+  `ContainerInfo.imageId?`, `rename()`, `copyDir()` (Docker and fake). Verified for real: a compose deployment,
+  a file in `~/Documents` of a stopped persistent desktop, a new desktop and manager image under the same tags,
+  `docker compose up -d`. A second desktop kept running on the old image; `deskhand start` brought the stopped one
+  up on the new image id in 11 s, with the file intact and owned by `agent`, and `~/.cache` gone.
+- **Desktop image pre-pull:** if `DESKHAND_DESKTOP_IMAGE` isn't present at startup (first install, new version tag),
+  the manager pulls it in the background, then re-runs `templates.initBase()` and auto-rebuild. Otherwise a new
+  user's first `desktop_start` would wait for about 0.7 GB.
+- **Quickstart timing** (2026-10-22, images present locally, retagged to GHCR names because the GHCR packages are
+  private; a fresh compose project with its own port, network, volume and instance): `docker compose up -d` returned
+  in 0.9 s, the login link and token were in the logs at 2.9 s, `claude mcp add` (into a scratch
+  `CLAUDE_CONFIG_DIR`) finished at 3.4 s, `desktop_start` returned at 12.2 s, and the agent's first `left_click` on
+  the terminal launcher came at **15.2 s**. An xterm was then open in the desktop (`wmctrl -l`). Claude Code
+  2.1.306, `claude-sonnet-5-5`, 4 turns. The one-time download is about 0.9 GB compressed (gzip of
+  `docker save`: desktop 729 MB, manager 129 MB).
+- **Sub-path and proxies:** nothing needed changing for `DESKHAND_BASE_PATH` behind a prefix-keeping proxy. Verified
+  with Caddy (TLS internal CA and plain HTTP), Tailscale Serve (`--set-path`), an SSH tunnel and Playwright through
+  Caddy: grid polling, noVNC live view over `wss://…/deskhand/…/vnc`, take over, typing, hand back. Real Claude Code
+  sessions clicked in a desktop through each (details in `docs/remote-access.md`). Observed: Tailscale Serve
+  forwards the scheme, so cookies are `Secure`. A cookie-authenticated write or websocket without an `Origin` is
+  refused (403). An MCP `DELETE` that carries `content-type: application/json` with no body gets Fastify's 400;
+  real clients don't send that header on DELETE.
+- **Chromium sandbox warning:** on Ubuntu 23.10+ `kernel.apparmor_restrict_unprivileged_userns=1` blocks Chromium's
+  user-namespace sandbox regardless of seccomp/AppArmor options (found by CI on ubuntu-24.04). The manager reads
+  that sysctl at startup (kernel.* is not namespaced, so it can read it from inside its container) and warns. It
+  also warns once when a running desktop's `/state` says `chromiumSandbox: "off"` while `DESKHAND_CHROME_SANDBOX`
+  is on. `SystemSummary.warnings?: string[]` (additive) carries the message to the dashboard's settings page
+  ("host warnings"). The fake daemon accepts `behavior.chromiumSandbox` for the test.
+- **License texts:** the desktop image no longer deletes `/usr/share/doc/*/copyright`. The slim base's dpkg config
+  already drops the rest, so all 426 installed packages keep their copyright file (checked). Bundled npm code
+  ships without `node_modules`, so `scripts/third-party-licenses.mjs` collects the license files of a package's
+  production dependency tree at build time: `/opt/deskhand/daemon/THIRD-PARTY-LICENSES.txt` and
+  `packages/dashboard/dist/THIRD-PARTY-LICENSES.txt` (served at `<base>/THIRD-PARTY-LICENSES.txt`). Both images
+  carry `LICENSE` and `NOTICE` in `/usr/share/doc/deskhand/`.
+- **CLI wrapper:** `scripts/deskhand` runs `docker exec` into the container labelled
+  `com.docker.compose.project=$DESKHAND_PROJECT` (default `deskhand`) and `service=deskhand`. It needs no compose file
+  and allocates a TTY only when stdin and stdout are terminals, so `deskhand screenshot > shot.png` stays binary-clean.
+- **arm64:** not built locally (no binfmt/QEMU registered on the dev host; CI builds and publishes both
+  architectures).

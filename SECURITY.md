@@ -10,12 +10,14 @@ We aim to acknowledge reports within 3 working days.
 
 ## What deskhand does and does not protect
 
-deskhand is a guardrail, not a security boundary. Read "Mounts and security" in `docs/security.md` before
-exposing it beyond localhost. In short:
+deskhand is a guardrail, not a security boundary. Read [docs/security.md](docs/security.md) before exposing it
+beyond localhost. In short:
 
 - The manager container mounts the Docker socket, which is root-equivalent on the host.
 - Agents that are in the host's `docker` group can bypass deskhand entirely.
-- Desktops share an internal network and can reach each other's daemons and services on the host network.
+- Desktops share a Docker network and can reach each other's daemon ports (key-protected) and services on the host's
+  network.
 - Templates store login cookies unencrypted in Docker images; action logs store screenshots of whatever was on
   screen.
 - Anything shown on a desktop's screen can contain prompt injection.
+- Opt-in `/dev/kvm` for a desktop widens its access to the host kernel.
