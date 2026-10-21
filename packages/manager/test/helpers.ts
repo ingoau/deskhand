@@ -60,7 +60,7 @@ export const FAST_ENV: Record<string, string> = {
 };
 
 export async function startManager(
-  opts: { env?: Record<string, string>; runtime?: Runtime; dataDir?: string; fake?: ConstructorParameters<typeof FakeRuntime>[0] } = {},
+  opts: { env?: Record<string, string>; runtime?: Runtime; dataDir?: string; fake?: ConstructorParameters<typeof FakeRuntime>[0]; ports?: [number, number] } = {},
 ): Promise<TestManager> {
   const dataDir = opts.dataDir ?? tmpDir();
   const docker = opts.env?.DESKHAND_RUNTIME === "docker";
@@ -71,7 +71,7 @@ export async function startManager(
   const env0: Record<string, string> = { ...FAST_ENV, DESKHAND_RUNTIME: "fake", DESKHAND_DATA_DIR: dataDir, ...opts.env };
   for (let attempt = 0; attempt < 20 && !m; attempt++) {
     // Test files run in parallel: another one may grab the port between the check and the bind.
-    port = await freePort();
+    port = await freePort(...(opts.ports ?? []));
     cfg = parseConfig({ ...env0, DESKHAND_BIND: `127.0.0.1:${port}` });
     const candidate = await createManager(cfg, { runtime, logger: pino({ level: env0.DESKHAND_LOG_LEVEL }) });
     try {

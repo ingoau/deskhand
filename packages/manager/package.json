@@ -11,8 +11,9 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/main.js",
-    "test": "vitest run --exclude 'test/docker/**'",
-    "test:docker": "vitest run test/docker"
+    "test": "vitest run --exclude 'test/docker/**' --exclude 'test/e2e/**'",
+    "test:docker": "vitest run test/docker",
+    "test:e2e": "vitest run test/e2e --testTimeout 300000"
   },
   "dependencies": {
     "@deskhand/mcp": "workspace:*",
