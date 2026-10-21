@@ -19,7 +19,7 @@ afterAll(async () => {
 const EXPECTED: Record<string, string[]> = {
   ...COMPUTER_TOOLSET,
   left_click_drag: ["start_coordinate", "coordinate", "text", "duration_ms", "hold_ms"],
-  desktop_start: ["mounts", "template", "name", "persistent"],
+  desktop_start: ["mounts", "template", "name", "persistent", "memory", "cpus", "kvm"],
   desktop_stop: [],
   desktop_list: [],
   set_title: ["text"],

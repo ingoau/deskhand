@@ -17,6 +17,7 @@ import {
   type TemplateDescription,
   type TemplateDetail,
   type TemplateFeedback,
+  type TemplateHardware,
   type TemplateSummary,
   type TemplateVersion,
 } from "@deskhand/shared";
@@ -67,6 +68,7 @@ interface VersionRow {
   rebuilt_from: number | null;
   size_bytes: number | null;
   removed_at: string | null;
+  hardware: string | null;
 }
 
 interface TplRow {
@@ -109,6 +111,8 @@ export interface SaveOptions {
   manifest: Manifest;
   savedFrom?: { desktop: string; title: string | null; session: string | null } | null;
   rebuiltFrom?: number | null;
+  /** Hardware of the desktop it was saved from (phase 6); desktops started from it default to this. */
+  hardware?: TemplateHardware | null;
 }
 
 function parseList(s: string | null | undefined): string[] {
@@ -118,6 +122,21 @@ function parseList(s: string | null | undefined): string[] {
   } catch {
     return [];
   }
+}
+
+function parseHardware(s: string | null | undefined): TemplateHardware | null {
+  if (!s) return null;
+  try {
+    const v = JSON.parse(s) as TemplateHardware;
+    return v && typeof v === "object" ? { kvm: !!v.kvm, memoryBytes: v.memoryBytes ?? null, cpus: v.cpus ?? null } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Null when the hardware is all defaults (no kvm, default memory and CPUs). */
+function meaningfulHardware(hw: TemplateHardware | null | undefined): TemplateHardware | null {
+  return hw && (hw.kvm || hw.memoryBytes || hw.cpus) ? hw : null;
 }
 
 function listChange(before: string[], after: string[]) {
@@ -272,6 +291,12 @@ export class TemplateService extends EventEmitter {
     return r ? { name, version, image: this.imageOf(r) } : null;
   }
 
+  /** Hardware recorded with a template version (phase 6): desktops started from it default to it. */
+  hardwareOf(name: string, version: number): TemplateHardware | null {
+    if (name === BASE_TEMPLATE) return null;
+    return parseHardware(this.versionRow(name, version)?.hardware);
+  }
+
   /** The base image a desktop started from this template version runs on. */
   baseOf(name: string, version: number): BaseInfo {
     if (name === BASE_TEMPLATE) return this.base;
@@ -280,11 +305,18 @@ export class TemplateService extends EventEmitter {
   }
 
   /** The current version's row (with recipe), for rebuilds. */
-  current(name: string): { version: number; image: string; recipe: string | null; description: TemplateDescription; base: BaseInfo } {
+  current(name: string): { version: number; image: string; recipe: string | null; description: TemplateDescription; base: BaseInfo; hardware: TemplateHardware | null } {
     const t = this.requireTpl(name);
     const r = this.versionRow(name, t.current_version);
     if (!r) throw new DeskhandError("template_not_found", `Template "${name}" has no usable version.`);
-    return { version: r.version, image: this.imageOf(r), recipe: r.recipe, description: JSON.parse(r.description) as TemplateDescription, base: { version: r.base_version, imageId: r.base_image_id } };
+    return {
+      version: r.version,
+      image: this.imageOf(r),
+      recipe: r.recipe,
+      description: JSON.parse(r.description) as TemplateDescription,
+      base: { version: r.base_version, imageId: r.base_image_id },
+      hardware: parseHardware(r.hardware),
+    };
   }
 
   isOutdated(base: BaseInfo): boolean {
@@ -311,6 +343,7 @@ export class TemplateService extends EventEmitter {
       rebuiltFrom: r.rebuilt_from,
       manifestNotes: parseList(r.manifest_notes),
       recipe: r.recipe,
+      hardware: parseHardware(r.hardware),
     };
   }
 
@@ -370,6 +403,7 @@ export class TemplateService extends EventEmitter {
       currentBaseVersion: this.base.version,
       extensions: parseList(current.extensions),
       rebuild,
+      hardware: parseHardware(current.hardware),
     };
   }
 
@@ -525,8 +559,8 @@ export class TemplateService extends EventEmitter {
       this.db
         .prepare(
           `INSERT INTO template_versions (name, version, image, created_at, saved_by, by_agent, base_version, base_image_id, recipe, description,
-             logged_in_sites, extensions, packages, manifest_notes, saved_from, rebuilt_from, size_bytes)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             logged_in_sites, extensions, packages, manifest_notes, saved_from, rebuilt_from, size_bytes, hardware)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           name,
@@ -546,6 +580,7 @@ export class TemplateService extends EventEmitter {
           opts.savedFrom ? JSON.stringify(opts.savedFrom) : null,
           opts.rebuiltFrom ?? null,
           sizeBytes,
+          meaningfulHardware(opts.hardware) ? JSON.stringify(opts.hardware) : null,
         );
     })();
     this.log.info({ template: name, version, image, sites: opts.manifest.loggedInSites, byAgent: opts.byAgent }, "template saved");

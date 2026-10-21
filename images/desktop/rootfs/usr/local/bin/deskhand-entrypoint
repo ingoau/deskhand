@@ -63,6 +63,21 @@ for d in Desktop Downloads Documents .config .cache; do
   install -d -o "$AGENT_UID" -g "$AGENT_GID" "/home/agent/$d"
 done
 
+# --- /dev/kvm (only present when the manager passed it in: desktop_start kvm: true)
+# Give the container's own device node to the agent's primary group. This node lives in the
+# container's private /dev (a tmpfs Docker creates per container), so the host's /dev/kvm keeps its
+# owner and mode. Primary group rather than a supplementary "kvm" group on purpose: the daemon's
+# exec (Node spawn with uid/gid — libuv drops supplementary groups), supervisord programs, docker
+# exec --user uid:gid and everything they launch all run with the agent's primary gid, so every way
+# a process can start inside the desktop can open it. Re-applied on every container start.
+if [ -c /dev/kvm ]; then
+  if chgrp "$AGENT_GID" /dev/kvm && chmod 0660 /dev/kvm; then
+    log info "/dev/kvm is available to the agent user (group $AGENT_GID, mode 0660)"
+  else
+    log warn "could not hand /dev/kvm to the agent user"
+  fi
+fi
+
 # --- daemon key: file only, never in the environment of agent processes
 umask 077
 if [ -n "${DESKHAND_DAEMON_KEY:-}" ]; then

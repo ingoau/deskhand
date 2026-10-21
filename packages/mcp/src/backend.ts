@@ -4,7 +4,9 @@
  */
 import type {
   DaemonClient,
+  DesktopHardware,
   DesktopStatus,
+  HardwareInfo,
   Mount,
   Overlay,
   TemplateDescription,
@@ -37,6 +39,8 @@ export interface DesktopRef {
   sessionIndex: number;
   screen: { width: number; height: number };
   mounts: Mount[];
+  /** Memory/CPU caps and KVM (phase 6). */
+  hardware?: DesktopHardware;
 }
 
 export interface ResolvedDesktop {
@@ -76,6 +80,10 @@ export interface StartOptions {
   template?: string;
   name?: string;
   persistent?: boolean;
+  /** Phase 6: memory cap like "8g", CPU cap, /dev/kvm passthrough. */
+  memory?: string;
+  cpus?: number;
+  kvm?: boolean;
 }
 
 export interface HumanWaitResult {
@@ -87,6 +95,8 @@ export interface HumanWaitResult {
 export interface McpBackend {
   readonly version: string;
   readonly instructions?: string;
+  /** Per-desktop resource defaults/limits and KVM availability (phase 6), for descriptions. */
+  hardware?(): HardwareInfo;
   /** Authenticates the Authorization header (null = 401). */
   authenticate(authorization: string | undefined): Principal | null;
   /** DNS-rebinding / cross-site protection: false = 403. */

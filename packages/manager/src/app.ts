@@ -14,6 +14,7 @@ import { AuthService, type Principal } from "./auth.js";
 import { ActionLog } from "./actionlog.js";
 import { MountPolicy } from "./mounts.js";
 import { DesktopService } from "./desktops.js";
+import { HardwareService } from "./hardware.js";
 import { TemplateService } from "./templates.js";
 import { TemplateRebuilder } from "./template-ops.js";
 import { FileService, ManagerMcpBackend } from "./mcp-backend.js";
@@ -68,7 +69,8 @@ export async function createManager(cfg: Config, deps: ManagerDeps = {}): Promis
   const actionLog = new ActionLog(db, path.join(cfg.dataDir, "shots"), logger);
   const policy = new MountPolicy(cfg, runtime);
   const templates = new TemplateService(cfg, db, runtime, logger);
-  const desktops = new DesktopService(cfg, db, runtime, policy, templates, actionLog, logger);
+  const hardware = new HardwareService(cfg, runtime, logger);
+  const desktops = new DesktopService(cfg, db, runtime, policy, templates, actionLog, logger, hardware);
   templates.inUse = (name, version) => desktops.list().filter((d) => d.template === name && d.templateVersion === version).length;
   const files = new FileService(cfg, runtime, policy, desktops);
   const backend = new ManagerMcpBackend(cfg, db, auth, desktops, templates, actionLog, files, logger, runtime);
@@ -164,6 +166,8 @@ export async function createManager(cfg: Config, deps: ManagerDeps = {}): Promis
     publicOrigin,
     async listen() {
       await desktops.init();
+      // KVM detection on the Docker host (cached) so desktop_start's description can state it; bounded.
+      await Promise.race([hardware.detect(), new Promise((r) => setTimeout(r, 15_000).unref())]);
       // Base-image tracking: a new desktop image rebuilds recipe-backed templates (in the background).
       await templates.initBase();
       void templates.pruneAll();

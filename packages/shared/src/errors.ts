@@ -22,6 +22,7 @@ export const ERROR_CODES = [
   "internal",
   "desktop_stopped",
   "not_found",
+  "kvm_unavailable",
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -47,6 +48,8 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   internal: "deskhand hit an internal error; try again, and ask the user to check the deskhand logs if it repeats.",
   desktop_stopped: "That desktop is stopped. Start it again (any tool call on it restarts it) and retry.",
   not_found: "Not found.",
+  kvm_unavailable:
+    "KVM is not available to desktops on this deskhand host (the Docker host has no /dev/kvm, or KVM is turned off with DESKHAND_KVM=off). Start the desktop without kvm, or ask the user to enable it.",
 };
 
 /** HTTP status used when an error crosses an HTTP boundary. */
@@ -70,6 +73,7 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   internal: 500,
   desktop_stopped: 409,
   not_found: 404,
+  kvm_unavailable: 409,
 };
 
 export interface ErrorBody {

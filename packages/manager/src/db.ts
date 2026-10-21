@@ -143,6 +143,13 @@ const MIGRATIONS: string[] = [
   ALTER TABLE template_feedback ADD COLUMN session TEXT;
   ALTER TABLE templates ADD COLUMN rebuild TEXT;
   `,
+  // Phase 6 (opt-in hardware): per-desktop memory/CPU caps and KVM; hardware recorded with template versions.
+  `
+  ALTER TABLE desktops ADD COLUMN memory_bytes INTEGER;
+  ALTER TABLE desktops ADD COLUMN cpus REAL;
+  ALTER TABLE desktops ADD COLUMN kvm INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE template_versions ADD COLUMN hardware TEXT;
+  `,
 ];
 
 export function openDb(file: string): DB {

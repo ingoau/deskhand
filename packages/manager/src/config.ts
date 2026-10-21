@@ -10,6 +10,11 @@ export interface Config {
   memoryBudget: { bytes: number } | { fraction: number };
   desktopMemoryBytes: number;
   desktopCpus: number;
+  /** Upper bounds for per-desktop `memory`/`cpus` (DESKHAND_DESKTOP_MAX_MEMORY / _MAX_CPUS). */
+  desktopMaxMemoryBytes: number;
+  desktopMaxCpus: number;
+  /** DESKHAND_KVM: auto = desktops may request /dev/kvm when the Docker host has it; off = never. */
+  kvm: "auto" | "off";
   idleTimeoutMs: number;
   stoppedRetentionMs: number;
   /** MCP sessions without requests for this long are ended (their ephemeral desktops removed). */
@@ -167,6 +172,18 @@ export function parseConfig(env: Env = process.env): Config {
   }
   const desktopCpus = Number(env.DESKHAND_DESKTOP_CPUS || "1.5");
   if (!(desktopCpus > 0)) throw new Error(`DESKHAND_DESKTOP_CPUS must be a positive number, got "${env.DESKHAND_DESKTOP_CPUS}"`);
+  let desktopMaxMemoryBytes: number;
+  try {
+    desktopMaxMemoryBytes = parseBytes(env.DESKHAND_DESKTOP_MAX_MEMORY || "8g");
+  } catch {
+    throw new Error(`DESKHAND_DESKTOP_MAX_MEMORY must be a size like 8g, got "${env.DESKHAND_DESKTOP_MAX_MEMORY}"`);
+  }
+  if (desktopMaxMemoryBytes < desktopMemoryBytes) throw new Error("DESKHAND_DESKTOP_MAX_MEMORY must be at least DESKHAND_DESKTOP_MEMORY");
+  const desktopMaxCpus = Number(env.DESKHAND_DESKTOP_MAX_CPUS || "4");
+  if (!(desktopMaxCpus > 0)) throw new Error(`DESKHAND_DESKTOP_MAX_CPUS must be a positive number, got "${env.DESKHAND_DESKTOP_MAX_CPUS}"`);
+  if (desktopMaxCpus < desktopCpus) throw new Error("DESKHAND_DESKTOP_MAX_CPUS must be at least DESKHAND_DESKTOP_CPUS");
+  const kvm = (env.DESKHAND_KVM || "auto").trim().toLowerCase();
+  if (kvm !== "auto" && kvm !== "off") throw new Error(`DESKHAND_KVM must be auto or off, got "${env.DESKHAND_KVM}"`);
   const screenM = /^(\d+)x(\d+)$/.exec(env.DESKHAND_SCREEN || "1280x800");
   if (!screenM) throw new Error(`DESKHAND_SCREEN must look like 1280x800`);
   const runtime = (env.DESKHAND_RUNTIME || "docker") as Config["runtime"];
@@ -182,6 +199,9 @@ export function parseConfig(env: Env = process.env): Config {
     memoryBudget,
     desktopMemoryBytes,
     desktopCpus,
+    desktopMaxMemoryBytes,
+    desktopMaxCpus,
+    kvm,
     idleTimeoutMs,
     stoppedRetentionMs,
     sessionTimeoutMs: dur(env.DESKHAND_SESSION_TIMEOUT, "24h", "DESKHAND_SESSION_TIMEOUT"),
