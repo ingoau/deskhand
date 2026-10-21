@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Run a command in a throwaway Node 24 container with this repo mounted at the
+# same path. Nothing (node, pnpm, playwright) is installed on the host.
+#   scripts/dev pnpm install
+#   scripts/dev pnpm -r test
+# Env: DEV_IMAGE (default node:24-bookworm), DEV_DOCKER=1 mounts the Docker socket.
+set -euo pipefail
+here="$(cd "$(dirname "$0")/.." && pwd)"
+# Mount the parent of the repo so git worktrees next to / inside it resolve.
+mount_root="$(dirname "$here")"
+image="${DEV_IMAGE:-node:24-bookworm}"
+args=(--rm -i --init --network host
+  --label owner=deskhand-dev
+  -u "$(id -u):$(id -g)"
+  -e HOME=/home/dev -e COREPACK_HOME=/home/dev/.corepack -e CI=1
+  -e COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+  -v deskhand-dev-home:/home/dev
+  -v "$mount_root:$mount_root"
+  -w "$PWD")
+[ -t 0 ] && args+=(-t)
+if [ "${DEV_DOCKER:-0}" = 1 ]; then
+  args+=(-v /var/run/docker.sock:/var/run/docker.sock --group-add "$(stat -c %g /var/run/docker.sock)")
+fi
+exec docker run "${args[@]}" "$image" bash -lc 'mkdir -p /home/dev/bin; corepack enable --install-directory /home/dev/bin >/dev/null 2>&1; export PATH=/home/dev/bin:$PATH; exec "$@"' _ "$@"
