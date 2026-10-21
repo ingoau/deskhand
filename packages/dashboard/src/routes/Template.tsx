@@ -79,6 +79,18 @@ function TemplateView({ t }: { t: TemplateDetail }) {
     },
     onError: (e) => toast(errorMessage(e), "error"),
   });
+  const rebuild = useMutation({
+    mutationFn: () => api.rebuildTemplate(t.name),
+    onSuccess: (r) => {
+      void qc.invalidateQueries({ queryKey: keys.template(t.name) });
+      void qc.invalidateQueries({ queryKey: keys.templates });
+      toast(`rebuilt ${t.name} as v${r.version}`, "ok");
+    },
+    onError: (e) => {
+      void qc.invalidateQueries({ queryKey: keys.template(t.name) });
+      toast(errorMessage(e), "error");
+    },
+  });
   const edit = useMutation({
     mutationFn: () => api.createDesktop({ template: t.name, name: `edit-${t.name}` }),
     onSuccess: (d) => {
@@ -118,10 +130,36 @@ function TemplateView({ t }: { t: TemplateDetail }) {
           <Button onClick={() => setDefault.mutate()} disabled={t.isDefault || setDefault.isPending}>
             {t.isDefault ? "default" : "set default"}
           </Button>
+          {t.hasRecipe ? (
+            <Button
+              onClick={() => rebuild.mutate()}
+              disabled={rebuild.isPending || t.rebuild?.status === "running" || t.rebuild?.status === "queued"}
+              title="replay the recipe on the current base image and carry the logins over"
+              data-testid="rebuild"
+            >
+              {rebuild.isPending || t.rebuild?.status === "running" ? "rebuilding…" : "rebuild"}
+            </Button>
+          ) : null}
           <Button variant="danger" onClick={() => setConfirmDelete(true)} disabled={t.isDefault}>
             delete
           </Button>
         </div>
+        {t.baseVersion ? (
+          <div className="mt-3 text-2xs text-faint" data-testid="template-base">
+            base {t.baseVersion}
+            {t.currentBaseVersion && t.currentBaseVersion !== t.baseVersion ? <span className="text-red/90"> · manager runs {t.currentBaseVersion}</span> : null}
+            {t.outdatedBase && !t.hasRecipe ? " · snapshot only: save it again on the new base to update" : ""}
+          </div>
+        ) : null}
+        {t.rebuild?.status === "failed" ? (
+          <div className="mt-3 border-l-2 border-red pl-3 text-xs" data-testid="rebuild-failed">
+            <div className="text-red">
+              rebuild on base {t.rebuild.baseVersion} failed · {since(t.rebuild.at, now)} ago
+            </div>
+            {t.rebuild.error ? <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap text-2xs text-dim">{t.rebuild.error}</pre> : null}
+          </div>
+        ) : null}
+        {t.stale && t.staleReason ? <div className="mt-2 text-xs text-amber/80">stale · {t.staleReason}</div> : null}
 
         <Section title="description">
           <dl className="grid grid-cols-[96px_1fr] gap-x-4 gap-y-1.5 sm:grid-cols-[120px_1fr]">
@@ -149,6 +187,12 @@ function TemplateView({ t }: { t: TemplateDetail }) {
             ) : null}
             <dt className="text-faint">logged in</dt>
             <dd className="text-dim">{t.loggedInSites.length ? t.loggedInSites.join(", ") : "no logins"}</dd>
+            {t.extensions?.length ? (
+              <>
+                <dt className="text-faint">extensions</dt>
+                <dd className="text-dim">{t.extensions.join(", ")}</dd>
+              </>
+            ) : null}
           </dl>
           {t.loggedInSites.length ? (
             <p className="mt-2 text-2xs text-faint">every agent that starts from this template can use these logins.</p>
@@ -180,7 +224,7 @@ function TemplateView({ t }: { t: TemplateDetail }) {
                   <FeedbackLine f={f} now={now} />
                   <span className="text-faint">
                     v{f.version}
-                    {f.by ? ` · ${f.by}` : ""}
+                    {f.session ? ` · ${f.session}` : f.by ? ` · ${f.by}` : ""}
                   </span>
                 </li>
               ))}
@@ -190,11 +234,7 @@ function TemplateView({ t }: { t: TemplateDetail }) {
           )}
         </Section>
 
-        {t.recipe ? (
-          <Section title="recipe" aside="replayed when the base image updates">
-            <pre className="overflow-x-auto rounded-sm border border-line bg-panel p-3 text-xs text-dim">{t.recipe}</pre>
-          </Section>
-        ) : null}
+        <RecipeSection t={t} onDetail={onDetail} />
       </div>
 
       <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
@@ -211,6 +251,69 @@ function TemplateView({ t }: { t: TemplateDetail }) {
         </DialogContent>
       </Dialog>
     </div>
+  );
+}
+
+/** The current version's recipe, editable in place (metadata only; replayed on the next rebuild). */
+function RecipeSection({ t, onDetail }: { t: TemplateDetail; onDetail: (d: TemplateDetail) => void }) {
+  const toast = useToast();
+  const [draft, setDraft] = useState<string | null>(null);
+  const save = useMutation({
+    mutationFn: (recipe: string | null) => api.setTemplateRecipe(t.name, recipe),
+    onSuccess: (next) => {
+      onDetail(next);
+      setDraft(null);
+      toast(next.recipe ? "recipe saved" : "recipe removed", "ok");
+    },
+    onError: (e) => toast(errorMessage(e), "error"),
+  });
+  const editing = draft !== null;
+  return (
+    <Section
+      title="recipe"
+      aside={
+        !editing ? (
+          <button className="text-muted hover:text-fg" onClick={() => setDraft(t.recipe ?? "")} data-testid="edit-recipe">
+            {t.recipe ? "edit" : "add a recipe"}
+          </button>
+        ) : (
+          "replayed on a new base image; logins are carried over from the snapshot"
+        )
+      }
+    >
+      {editing ? (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            save.mutate(draft.trim() ? draft : null);
+          }}
+        >
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            rows={Math.min(18, Math.max(5, draft.split("\n").length + 1))}
+            spellCheck={false}
+            aria-label="recipe"
+            placeholder={"# runs with bash -e as the agent user; '# deskhand: run-as=root' in the first lines runs it as root\napt-get install -y jq"}
+            className="w-full rounded-sm border border-line-strong bg-bg p-3 font-mono text-xs text-fg placeholder:text-faint focus:border-amber focus:outline-none"
+          />
+          <div className="mt-2 flex gap-2">
+            <Button type="submit" variant="primary" size="sm" disabled={save.isPending}>
+              {save.isPending ? "saving…" : "save recipe"}
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => setDraft(null)}>
+              cancel
+            </Button>
+          </div>
+        </form>
+      ) : t.recipe ? (
+        <pre className="overflow-x-auto rounded-sm border border-line bg-panel p-3 text-xs text-dim" data-testid="recipe">
+          {t.recipe}
+        </pre>
+      ) : (
+        <p className="text-faint">snapshot only: without a recipe this template can't be rebuilt when the base image updates.</p>
+      )}
+    </Section>
   );
 }
 
@@ -267,7 +370,7 @@ function DiffView({ diff }: { diff: VersionDiff }) {
       {diff.recipeChanged ? (
         <div>
           <span className="text-faint">recipe </span>
-          {diff.recipeChanged.after ? "added" : "removed"}
+          {diff.recipeChanged.before === diff.recipeChanged.after ? "changed" : diff.recipeChanged.after ? "added" : "removed"}
         </div>
       ) : null}
     </div>
@@ -306,9 +409,16 @@ function VersionRow({
             {v.inUse ? ` · ${v.inUse} in use` : ""}
           </span>
         </div>
+        {v.savedFrom || v.rebuiltFrom ? (
+          <div className="mt-0.5 text-2xs text-faint" data-testid="version-provenance">
+            {v.rebuiltFrom ? `rebuilt from v${v.rebuiltFrom} on a new base` : null}
+            {v.savedFrom ? `saved from ${v.savedFrom.title ? `“${v.savedFrom.title}”` : v.savedFrom.desktop}${v.savedFrom.session ? ` · ${v.savedFrom.session}` : ""}` : null}
+          </div>
+        ) : null}
         <div className="mt-1">
           <DiffView diff={diff} />
         </div>
+        {v.manifestNotes?.length ? <div className="mt-1 text-2xs text-amber/70">{v.manifestNotes.join(" · ")}</div> : null}
       </div>
       <div className="col-start-2 sm:col-start-auto">
         {!current ? (

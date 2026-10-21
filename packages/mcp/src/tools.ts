@@ -475,10 +475,12 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
       if (x1 > s.width || y1 > s.height) throw new DeskhandError("invalid_argument", `region [${args.region.join(", ")}] is outside the ${s.width}×${s.height} screen.`);
       const shot = await ctx.desktop!.daemon.screenshot({ format: "png", region: [x0, y0, x1, y1] });
       const raw = Buffer.from(shot.data, "base64");
+      // The action log draws the region in screen coordinates, so it stores the whole screen, not the zoomed crop.
+      const full = await ctx.desktop!.daemon.screenshot({ format: "png" }).catch(() => null);
       return {
         content: [text(`Zoomed region [${x0}, ${y0}, ${x1}, ${y1}] shown at ${shot.width}×${shot.height}.`), await imageContent(ctx, raw)],
-        overlays: overlaysFor("zoom", args),
-        logScreenshot: raw,
+        overlays: full ? overlaysFor("zoom", args) : [],
+        logScreenshot: full ? Buffer.from(full.data, "base64") : raw,
         hasScreenshot: true,
       };
     },

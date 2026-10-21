@@ -181,6 +181,39 @@ test.describe("templates", () => {
     await expect(page.getByTestId("template-row").filter({ hasText: "research" })).toContainText("rolled back · latest v2");
   });
 
+  test("recipe editor, rebuild, stale reason and base (phase 4 fields)", async ({ page }) => {
+    await page.goto("templates");
+    await expect(page.getByTestId("template-row").filter({ hasText: "vendor-portals" }).getByTestId("marker-stale")).toContainText("Ariba login expired");
+    await page.goto("templates/research");
+    await expect(page.getByTestId("template-base")).toContainText("base 0.1.0");
+    await expect(page.getByTestId("recipe")).toContainText("apt-get install -y gh jq");
+    await page.getByTestId("edit-recipe").click();
+    await page.getByLabel("recipe").fill("apt-get install -y gh jq ripgrep");
+    await page.getByRole("button", { name: "save recipe" }).click();
+    await expect(page.getByText("recipe saved")).toBeVisible();
+    await expect(page.getByTestId("recipe")).toContainText("ripgrep");
+    await page.getByTestId("rebuild").click();
+    await expect(page.getByText(/rebuilt research as v3/)).toBeVisible();
+    await expect(page.getByTestId("current-version")).toHaveText("v3");
+    await expect(page.locator('[data-testid="version-row"][data-version="3"]').getByTestId("version-provenance")).toContainText("rebuilt from v2");
+    // Snapshot-only templates have no rebuild button.
+    await page.goto("templates/office");
+    await expect(page.getByTestId("rebuild")).toHaveCount(0);
+    await expect(page.getByTestId("template-base")).toContainText("manager runs 0.1.0");
+  });
+
+  test("save as template offers to keep the current description for a new version", async ({ page }) => {
+    await page.goto("desktops/2c91");
+    await page.getByTestId("desktop-menu").click();
+    await page.getByRole("menuitem", { name: "save as template…" }).click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByLabel(/^name/).fill("research");
+    await expect(dialog.getByTestId("keep-description")).toContainText("keep the current description");
+    await expect(dialog.getByPlaceholder("Triaging issues or reviewing PRs in the web UI")).toHaveCount(0);
+    await dialog.getByRole("button", { name: "save template" }).click();
+    await expect(page.getByText("saved research v3")).toBeVisible({ timeout: 10_000 });
+  });
+
   test("edit starts a desktop from the template", async ({ page }) => {
     await page.goto("templates/vendor-portals");
     await page.getByRole("button", { name: "edit" }).click();

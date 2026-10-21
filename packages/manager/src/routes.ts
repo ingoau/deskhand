@@ -27,6 +27,7 @@ import type { ActionLog } from "./actionlog.js";
 import type { FileService, ManagerMcpBackend } from "./mcp-backend.js";
 import { saveDesktopAsTemplate, type TemplateRebuilder } from "./template-ops.js";
 import type { Runtime } from "./runtime/types.js";
+import type { FakeRuntime } from "./runtime/fake.js";
 import { toPng, toThumbnail } from "./images.js";
 import { z } from "zod";
 
@@ -329,6 +330,19 @@ export async function registerRoutes(app: FastifyInstance, ctx: RouteContext): P
     if (!f) throw new DeskhandError("not_found", "No screenshot stored for that log entry.");
     return reply.header("cache-control", "private, max-age=86400").type("image/webp").send(await fs.promises.readFile(f));
   });
+
+  // Fake runtime only (tests, dashboard e2e): what reached the fake desktop, incl. VNC input that got through the filter.
+  if (ctx.runtime.kind === "fake") {
+    app.get(`${D}/fake-inputs`, async (req) => {
+      const fake = (ctx.runtime as FakeRuntime).daemonFor(did(req));
+      if (!fake) throw new DeskhandError("desktop_stopped");
+      return {
+        inputs: fake.inputs,
+        vnc: fake.vncInputs.map((b) => ({ type: b[0], hex: b.toString("hex") })),
+        cursor: fake.cursor,
+      };
+    });
+  }
 
   // ---------------------------------------------------------------- files
 

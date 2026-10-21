@@ -111,8 +111,7 @@ function EntryMeta({ entry: e }: { entry: LogEntry }) {
     <div className="mt-2 text-xs text-muted">
       <OutcomeBadge outcome={e.outcome} />
       {e.durationMs != null ? ` · ${formatDuration(e.durationMs)}` : ""}
-      {e.actor ? ` · ${e.actor}` : ""}
-      {e.session && e.session !== e.actor ? ` · ${e.session}` : ""}
+      {who(e) ? ` · ${who(e)}` : ""}
       {e.error ? (
         <div className="mt-1 text-red">
           {e.error.code}: {e.error.message}

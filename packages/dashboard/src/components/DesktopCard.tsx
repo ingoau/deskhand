@@ -14,6 +14,22 @@ function usageTitle(d: DesktopSummary) {
   return parts.filter(Boolean).join(" · ");
 }
 
+/** Second line; a long-held lock gets a warning (plan: ~30 min; never released automatically). */
+function StatusText({ d, now }: { d: DesktopSummary; now: number }) {
+  const long = displayState(d) === "control" && lockIsLong(d, now);
+  return (
+    <>
+      {statusLine(d, now)}
+      {long ? (
+        <span className="text-amber" data-testid="long-lock" title="You have held control for over 30 minutes; the agent's input waits until you hand back.">
+          {" "}
+          · hand back?
+        </span>
+      ) : null}
+    </>
+  );
+}
+
 export function frameClass(d: DesktopSummary) {
   const s = displayState(d);
   return s === "attention" ? "border-amber" : s === "control" ? "border-violet" : "border-transparent";
@@ -33,7 +49,9 @@ export function DesktopTile({ desktop: d }: { desktop: DesktopSummary }) {
         <span className={cn("truncate font-medium", state === "stopped" ? "text-muted" : "text-fg")}>{displayTitle(d)}</span>
         <span className="ml-auto shrink-0 tabular-nums text-muted">{uptimeLabel(d, now)}</span>
       </div>
-      <div className="mt-[3px] truncate pl-[17px] text-muted">{statusLine(d, now)}</div>
+      <div className="mt-[3px] truncate pl-[17px] text-muted">
+        <StatusText d={d} now={now} />
+      </div>
     </Link>
   );
 }
@@ -53,7 +71,9 @@ export function DesktopRow({ desktop: d }: { desktop: DesktopSummary }) {
           <span className={cn("truncate font-medium", state === "stopped" ? "text-muted" : "text-fg")}>{displayTitle(d)}</span>
           <span className="ml-auto shrink-0 pl-2 tabular-nums text-muted">{uptimeLabel(d, now)}</span>
         </div>
-        <div className="mt-[3px] truncate pl-[15px] text-muted">{statusLine(d, now)}</div>
+        <div className="mt-[3px] truncate pl-[15px] text-muted">
+          <StatusText d={d} now={now} />
+        </div>
       </div>
     </Link>
   );

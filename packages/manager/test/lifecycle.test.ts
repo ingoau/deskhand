@@ -263,9 +263,18 @@ describe("desktop lifecycle (fake runtime)", () => {
     });
     expect(first.toString()).toBe("RFB 003.008\n");
     expect(ws.protocol).toBe("binary");
-    ws.send(Buffer.from([4, 1, 0, 0, 0, 0, 0, 0x61]));
-    const echo = await new Promise<Buffer>((resolve) => ws.once("message", (d) => resolve(d as Buffer)));
-    expect([...echo]).toEqual([4, 1, 0, 0, 0, 0, 0, 0x61]);
+    const next = () => new Promise<Buffer>((resolve) => ws.once("message", (d) => resolve(d as Buffer)));
+    ws.send(Buffer.from("RFB 003.008\n"));
+    expect([...(await next())]).toEqual([1, 1]); // security type None
+    ws.send(Buffer.from([1]));
+    expect([...(await next())]).toEqual([0, 0, 0, 0]);
+    ws.send(Buffer.from([1])); // ClientInit (shared)
+    const init = await next();
+    expect([init.readUInt16BE(0), init.readUInt16BE(2)]).toEqual([1280, 800]);
+    ws.send(Buffer.from([4, 1, 0, 0, 0, 0, 0, 0x61])); // KeyEvent 'a'
+    const fake = (t.runtime as FakeRuntime).daemonFor(id)!;
+    await waitFor(() => fake.vncInputs.length === 1);
+    expect([...fake.vncInputs[0]!]).toEqual([4, 1, 0, 0, 0, 0, 0, 0x61]);
     ws.close();
     const unlock = await api(t, "DELETE", `/api/desktops/${id}/lock`, { note: null });
     expect(unlock.data).toEqual({ generation: lock.data.generation + 1, lock: null });
