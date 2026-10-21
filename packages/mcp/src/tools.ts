@@ -49,6 +49,8 @@ function checkCoord(c: [number, number] | undefined, screen: { width: number; he
 }
 
 const LOCK_WAIT_MS = 30_000;
+/** desktop_exec progress notification interval (DESKHAND_EXEC_PROGRESS_MS, for tests). */
+const execProgressMs = () => Number(process.env.DESKHAND_EXEC_PROGRESS_MS) || 20_000;
 const SLACK_MS = 15_000;
 
 function deadlineFor(input: InputAction): number {
@@ -755,7 +757,16 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
     input: true,
     async handler(args, ctx) {
       const t = Math.round((args.timeout ?? 60) * 1000);
-      const r = await ctx.desktop!.daemon.exec({ command: args.command, timeout_ms: t, generation: ctx.generation, actor: `mcp:${ctx.actor}` }, LOCK_WAIT_MS + t + SLACK_MS, ctx.signal);
+      // Long commands (downloads, SDK installs) send progress so MCP clients with an idle timeout
+      // (Claude Code aborts a call silent for 300 s) keep waiting.
+      const started = Date.now();
+      const beat = setInterval(() => ctx.progress(Math.round((Date.now() - started) / 1000), Math.round(t / 1000), "Command running"), execProgressMs());
+      let r;
+      try {
+        r = await ctx.desktop!.daemon.exec({ command: args.command, timeout_ms: t, generation: ctx.generation, actor: `mcp:${ctx.actor}` }, LOCK_WAIT_MS + t + SLACK_MS, ctx.signal);
+      } finally {
+        clearInterval(beat);
+      }
       const cap = (s: string) => (s.length > 40_000 ? s.slice(0, 40_000) + `\n… (${s.length - 40_000} more characters truncated)` : s);
       const head = r.timedOut ? `Timed out after ${args.timeout ?? 60} s and was killed.` : r.signal ? `Killed by ${r.signal}.` : `Exit code ${r.exitCode}.`;
       const parts = [head];

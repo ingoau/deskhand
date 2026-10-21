@@ -429,6 +429,8 @@ workloads such as the Android emulator possible and discoverable without baking 
 - **Dashboard:** "+ new" has memory / cpus inputs (placeholders = template or host default, hints = max) and a kvm
   switch (disabled with the reason when unavailable/off); tiles and the detail meta line show `kvm` and the memory cap
   when it differs from the default (CPU cap on the detail line and the tile tooltip); template pages show hardware.
+- **Long commands:** `desktop_exec` sends an MCP progress notification every 20 s while its command runs (found in the
+  real-agent Android run: Claude Code aborts a call that is silent for 300 s, which cut off an SDK install).
 - **Desktop open-file limit (found while verifying the panel path):** under Docker's default `nofile` (~10⁹ soft and
   hard) tint2's launchers fork a child that loops closing every possible fd before `exec`, so a panel click left a
   100 %-CPU `tint2` child and no app for minutes. The entrypoint now sets soft 1024 / hard 524288 (systemd's login

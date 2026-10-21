@@ -260,3 +260,20 @@ describe("templates remember hardware (fake runtime)", () => {
     await c2.close();
   });
 });
+
+describe("long commands (fake runtime)", () => {
+  it("desktop_exec sends progress notifications while a command runs", async () => {
+    process.env.DESKHAND_EXEC_PROGRESS_MS = "150";
+    try {
+      const t = await manager();
+      const { client } = await connectMcp(t.url, t.token);
+      const seen: number[] = [];
+      const r = await client.callTool({ name: "desktop_exec", arguments: { command: "sleep 1; echo done" } }, undefined, { onprogress: (p) => seen.push(p.progress) });
+      expect(textOf(r)).toContain("done");
+      expect(seen.length).toBeGreaterThanOrEqual(3);
+      await client.close();
+    } finally {
+      delete process.env.DESKHAND_EXEC_PROGRESS_MS;
+    }
+  });
+});
