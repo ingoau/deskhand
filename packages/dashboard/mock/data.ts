@@ -245,11 +245,11 @@ interface DesktopSeed {
 
 const SEEDS: DesktopSeed[] = [
   { id: "7f3a", title: "supplier-portal-sign-up", session: "t3/onboarding-vendors", template: "base", templateVersion: 1, scene: "captcha", accent: "#2f6b52", startedAgo: 18 * M, createdAgo: 18 * M + 6 * S, cpu: 3.1, memMb: 820 },
-  { id: "2c91", title: "linear-triage", session: "claude-laptop/9f2c", template: "research", templateVersion: 2, scene: "issues", accent: "#5a62d6", startedAgo: 42 * M, createdAgo: 42 * M + 5 * S, cpu: 11.4, memMb: 1310 },
-  { id: "b40e", title: "invoice-export.sub2", session: "claude-laptop/1b7e", sessionIndex: 2, template: "office", templateVersion: 4, scene: "sheet", accent: "#1f6f3c", startedAgo: 65 * M, createdAgo: 65 * M + 7 * S, cpu: 6.2, memMb: 1540, persistent: true },
-  { id: "e1d8", title: "pr-review-212", session: "codex-ci/3a1d", template: "research", templateVersion: 2, scene: "diff", accent: "#2b2d31", startedAgo: 9 * M, createdAgo: 9 * M + 4 * S, cpu: 14.8, memMb: 1180 },
-  { id: "5a77", title: "drag-test-suite", session: "suite/run-118", template: "base", templateVersion: 1, scene: "drag", accent: "#b4520f", startedAgo: 3 * M, createdAgo: 3 * M + 5 * S, cpu: 7.3, memMb: 690 },
-  { id: "93fc", title: "move-release-assets", session: "claude-laptop/77d0", template: "base", templateVersion: 1, scene: "files", accent: "#4b4b4e", startedAgo: 27 * M, createdAgo: 27 * M + 5 * S, cpu: 3.6, memMb: 540 },
+  { id: "2c91", title: "linear-triage", session: "claude-laptop/9f2c", template: "research", templateVersion: 2, scene: "issues", accent: "#5a62d6", startedAgo: 42 * M, createdAgo: 3 * HR, cpu: 11.4, memMb: 1310 },
+  { id: "b40e", title: "invoice-export.sub2", session: "claude-laptop/1b7e", sessionIndex: 2, template: "office", templateVersion: 4, scene: "sheet", accent: "#1f6f3c", startedAgo: 65 * M, createdAgo: 2 * HR + 50 * M, cpu: 6.2, memMb: 1540, persistent: true },
+  { id: "e1d8", title: "pr-review-212", session: "codex-ci/3a1d", template: "research", templateVersion: 2, scene: "diff", accent: "#2b2d31", startedAgo: 9 * M, createdAgo: 2 * HR + 20 * M, cpu: 14.8, memMb: 1180 },
+  { id: "5a77", title: "drag-test-suite", session: "suite/run-118", template: "base", templateVersion: 1, scene: "drag", accent: "#b4520f", startedAgo: 3 * M, createdAgo: 70 * M, cpu: 7.3, memMb: 690 },
+  { id: "93fc", title: "move-release-assets", session: "claude-laptop/77d0", template: "base", templateVersion: 1, scene: "files", accent: "#4b4b4e", startedAgo: 27 * M, createdAgo: 50 * M, cpu: 3.6, memMb: 540 },
   { id: "0d2b", title: "docs-screenshots", session: "claude-laptop/0aa3", template: "research", templateVersion: 1, scene: "docs", accent: "#3d2b6e", startedAgo: 2 * HR + 40 * M, createdAgo: 2 * HR + 41 * M, status: "stopped" },
   { id: "c41e", title: null, session: "t3/research-notes", template: "research", templateVersion: 2, scene: "blank", accent: "#2b2d31", startedAgo: null, createdAgo: 4 * S, status: "starting" },
 ];
@@ -525,7 +525,7 @@ export function createState(opts: { authRequired?: boolean } = {}): MockState {
     authRequired: opts.authRequired ?? false,
     sessions: new Set(),
     uploads: [],
-    logDiskBytes: 1.3 * 1024 ** 3,
+    logDiskBytes: Math.round(1.3 * 1024 ** 3),
   };
 }
 

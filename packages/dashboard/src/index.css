@@ -71,9 +71,16 @@
     -webkit-tap-highlight-color: transparent;
     color-scheme: dark;
   }
+  /* Prototype density: 11px on desktop, 12px on phones. */
   body {
-    font-size: var(--text-sm);
-    line-height: var(--text-sm--line-height);
+    font-size: 12px;
+    line-height: 18px;
+  }
+  @media (min-width: 640px) {
+    body {
+      font-size: 11px;
+      line-height: 17px;
+    }
   }
   ::selection {
     background: #3a3220;

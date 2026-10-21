@@ -12,8 +12,9 @@ export function Markers({ t, className }: { t: TemplateSummary; className?: stri
     <span className={cn("flex flex-wrap items-center gap-x-3 gap-y-1 text-2xs", className)}>
       {t.isDefault ? <span className="text-dim">default</span> : null}
       {t.recentlyChangedByAgent ? (
-        <span className="text-amber" data-testid="marker-agent">
-          ● changed by agent
+        <span className="inline-flex items-center gap-1.5 text-amber" data-testid="marker-agent">
+          <span className="h-[5px] w-[5px] rounded-full bg-amber" />
+          changed by agent
         </span>
       ) : null}
       {t.stale ? <span className="text-amber/80">stale</span> : null}

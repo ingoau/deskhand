@@ -67,6 +67,11 @@ export function LiveView({ desktop, control, generation, className, onRfb, onCli
           retry = setTimeout(() => setAttempt((a) => a + 1), Math.min(10_000, 1500 * 2 ** Math.min(attempt, 3)));
         });
         rfb.addEventListener("clipboard", (e) => cb.current.onClipboard?.((e as CustomEvent<{ text: string }>).detail.text));
+        // The daemon proxy needs no VNC password; if the server asks for one, show the thumbnail instead.
+        rfb.addEventListener("credentialsrequired", () => {
+          setState("unavailable");
+          rfb?.disconnect();
+        });
       })
       .catch(() => !cancelled && setState("unavailable"));
     return () => {
@@ -92,7 +97,7 @@ export function LiveView({ desktop, control, generation, className, onRfb, onCli
             <div className="absolute inset-x-0 bottom-0 flex justify-center p-2">
               <span className="rounded-sm bg-black/70 px-2 py-0.5 text-2xs text-dim">
                 {IS_MOCK
-                  ? "live view unavailable in mock · showing thumbnail"
+                  ? "live view unavailable in mock"
                   : state === "connecting"
                     ? "connecting live view…"
                     : state === "disconnected"

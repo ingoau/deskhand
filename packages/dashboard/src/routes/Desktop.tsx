@@ -157,9 +157,9 @@ function DesktopDetail({ desktop: d }: { desktop: DesktopSummary }) {
         </div>
       </div>
 
-      <div className="px-4 sm:px-[18px] lg:flex lg:gap-6">
-        <div className="min-w-0 lg:flex-1">
-          <h1 className="flex items-center gap-[10px] text-lg font-bold text-fg">
+      <div className="px-4 sm:px-[18px] lg:flex lg:gap-7">
+        <div className="min-w-0 lg:flex-1" style={lg ? { maxWidth: `calc((100dvh - 170px) * ${screen.width} / ${screen.height})` } : undefined}>
+          <h1 className="flex items-center gap-[10px] text-[14px] font-bold text-fg sm:text-lg">
             <StatusDot state={state} className="h-[7px] w-[7px]" pulse={state === "control" && lockIsLong(d, now)} />
             <span className="truncate" data-testid="desktop-title">
               {displayTitle(d)}

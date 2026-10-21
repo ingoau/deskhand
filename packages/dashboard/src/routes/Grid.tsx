@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
 import { AttentionBanner } from "../components/AttentionBanner";
 import { DesktopRow, DesktopTile } from "../components/DesktopCard";
@@ -12,19 +12,14 @@ import { useDesktops } from "../lib/queries";
 export function Grid() {
   const { data: desktops, error, isPending } = useDesktops();
   const [params, setParams] = useSearchParams();
-  const tab = (FILTER_TABS as string[]).includes(params.get("tab") ?? "") ? (params.get("tab") as FilterTab) : "all";
-  const query = params.get("q") ?? "";
-
-  const set = (k: string, v: string) =>
-    setParams(
-      (p) => {
-        const n = new URLSearchParams(p);
-        if (v && !(k === "tab" && v === "all")) n.set(k, v);
-        else n.delete(k);
-        return n;
-      },
-      { replace: true },
-    );
+  const [tab, setTab] = useState<FilterTab>(() => ((FILTER_TABS as string[]).includes(params.get("tab") ?? "") ? (params.get("tab") as FilterTab) : "all"));
+  const [query, setQuery] = useState(() => params.get("q") ?? "");
+  useEffect(() => {
+    const n = new URLSearchParams();
+    if (tab !== "all") n.set("tab", tab);
+    if (query) n.set("q", query);
+    setParams(n, { replace: true });
+  }, [tab, query, setParams]);
 
   const list = desktops ?? [];
   const counts = useMemo(() => tabCounts(list, query), [list, query]);
@@ -39,7 +34,7 @@ export function Grid() {
         <div className="flex flex-col gap-3 sm:mt-2 sm:flex-row sm:items-center sm:gap-[18px]">
           <input
             value={query}
-            onChange={(e) => set("q", e.target.value)}
+            onChange={(e) => setQuery(e.target.value)}
             placeholder="filter…"
             aria-label="filter desktops"
             className="h-[34px] w-full border-b border-line bg-transparent text-base text-fg placeholder:text-muted focus:border-line-strong focus:outline-none sm:h-[30px] sm:w-[215px] sm:text-sm"
@@ -51,7 +46,7 @@ export function Grid() {
                 role="tab"
                 aria-selected={tab === t}
                 data-testid={`tab-${t}`}
-                onClick={() => set("tab", t)}
+                onClick={() => setTab(t)}
                 className={cn("whitespace-nowrap py-1", tab === t ? "font-medium text-fg underline decoration-1 underline-offset-[5px]" : "text-muted hover:text-dim")}
               >
                 {t} {counts[t]}

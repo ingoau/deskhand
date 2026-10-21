@@ -50,9 +50,9 @@ test.describe("desktops grid", () => {
 });
 
 test.describe("takeover", () => {
-  test("take over, then hand back with a note", async ({ page, request }) => {
+  test("take over, then hand back with a note", async ({ page, request, mobile }) => {
     await page.goto("./");
-    await page.getByText("supplier-portal-sign-up").first().click();
+    await tiles(page, mobile).filter({ hasText: "supplier-portal-sign-up" }).click();
     await expect(page).toHaveURL(/\/deskhand\/desktops\/7f3a$/);
     await expect(page.getByTestId("desktop-title")).toHaveText("supplier-portal-sign-up");
     await expect(page.getByTestId("desktop-meta")).toContainText("base@v1 · t3/onboarding-vendors · 18m");
@@ -102,7 +102,7 @@ test.describe("takeover", () => {
     await page.getByTestId("desktop-menu").click();
     await page.getByRole("menuitem", { name: "kill" }).click();
     await page.getByTestId("confirm-kill").click();
-    await expect(page).toHaveURL(/\/deskhand\/$/);
+    await expect(page).toHaveURL(/\/deskhand\/?$/);
     await expect(tiles(page, mobile)).toHaveCount(7);
   });
 

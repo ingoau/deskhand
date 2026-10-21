@@ -70,9 +70,10 @@ const router = createBrowserRouter(
 );
 
 setUnauthorizedHandler(() => {
-  const { pathname, search } = router.state.location;
+  const { pathname: full, search } = router.state.location;
+  const pathname = ROUTER_BASENAME !== "/" && full.startsWith(ROUTER_BASENAME) ? full.slice(ROUTER_BASENAME.length) || "/" : full;
   if (pathname === "/login") return;
-  queryClient.cancelQueries();
+  void queryClient.cancelQueries();
   void router.navigate(`/login?next=${encodeURIComponent(pathname + search)}`, { replace: true });
 });
 
