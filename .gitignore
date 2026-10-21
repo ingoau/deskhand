@@ -8,3 +8,4 @@ playwright-report/
 /tmp/
 .claude/worktrees/
 suite/results/
+__pycache__/
