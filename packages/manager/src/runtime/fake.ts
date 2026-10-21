@@ -19,6 +19,7 @@ interface FakeContainer {
   startedAt: string | null;
   finishedAt: string | null;
   filesRoot: string;
+  imageId: string;
 }
 
 export interface FakeRuntimeOptions {
@@ -87,9 +88,10 @@ export class FakeRuntime implements Runtime {
     if (this.diskFull) throw new DeskhandError("disk_full");
     if ([...this.containers.values()].some((c) => c.spec.name === spec.name)) throw new DeskhandError("internal", `name ${spec.name} in use`);
     const id = randomId(16);
-    const filesRoot = path.join(this.root, spec.id);
+    const filesRoot = path.join(this.root, id);
     fs.mkdirSync(filesRoot, { recursive: true });
-    this.containers.set(id, { id, spec, running: false, daemon: null, port: null, startedAt: null, finishedAt: null, filesRoot });
+    const imageId = this.imageIds.get(spec.image) ?? `sha256:fake-${spec.image}`;
+    this.containers.set(id, { id, spec, running: false, daemon: null, port: null, startedAt: null, finishedAt: null, filesRoot, imageId });
     return id;
   }
 
@@ -156,6 +158,34 @@ export class FakeRuntime implements Runtime {
     await this.start(id);
   }
 
+  /** copyDir calls (tests). */
+  readonly dirCopies: Array<{ from: string; to: string; dir: string; exclude: string[] }> = [];
+
+  async rename(id: string, name: string) {
+    this.check();
+    const c = this.containers.get(id);
+    if (!c) throw new DeskhandError("internal", "no such container");
+    if ([...this.containers.values()].some((o) => o !== c && o.spec.name === name)) throw new DeskhandError("internal", `name ${name} in use`);
+    c.spec = { ...c.spec, name };
+  }
+
+  async copyDir(fromId: string, toId: string, dir: string, exclude: string[]) {
+    this.check();
+    const from = this.containers.get(fromId);
+    const to = this.containers.get(toId);
+    if (!from || !to) throw new DeskhandError("internal", "no such container");
+    this.dirCopies.push({ from: fromId, to: toId, dir, exclude });
+    const src = path.join(from.filesRoot, dir);
+    if (!fs.existsSync(src)) return;
+    fs.cpSync(src, path.join(to.filesRoot, dir), {
+      recursive: true,
+      filter: (p) => {
+        const abs = path.posix.join(dir, path.relative(src, p).split(path.sep).join("/")).replace(/\/$/, "");
+        return !exclude.some((x) => abs === x || abs.startsWith(`${x}/`));
+      },
+    });
+  }
+
   async remove(id: string) {
     this.check();
     const c = this.containers.get(id);
@@ -177,6 +207,7 @@ export class FakeRuntime implements Runtime {
       startedAt: c.startedAt,
       finishedAt: c.finishedAt,
       image: c.spec.image,
+      imageId: c.imageId,
       binds: c.spec.binds,
     };
   }

@@ -261,6 +261,51 @@ export class DockerRuntime implements Runtime {
     }
   }
 
+  async rename(id: string, name: string): Promise<void> {
+    try {
+      await this.docker.getContainer(id).rename({ name });
+    } catch (e) {
+      throw mapDockerError(e);
+    }
+  }
+
+  async copyDir(fromId: string, toId: string, dir: string, exclude: string[]): Promise<void> {
+    const parent = path.posix.dirname(dir);
+    const skip = (abs: string) => exclude.some((x) => abs === x || abs.startsWith(`${x}/`));
+    try {
+      const src = (await this.docker.getContainer(fromId).getArchive({ path: dir })) as unknown as Readable;
+      const extract = tar.extract();
+      const pack = tar.pack();
+      let failed: Error | null = null;
+      extract.on("entry", (header, entry, next) => {
+        const abs = path.posix.join(parent, header.name).replace(/\/$/, "");
+        if (skip(abs)) {
+          entry.resume();
+          entry.on("end", next);
+          return;
+        }
+        if (header.type === "file" || header.type === "contiguous-file") {
+          entry.pipe(pack.entry(header, (err) => (err ? next(err) : next())));
+        } else {
+          pack.entry(header);
+          entry.resume();
+          entry.on("end", next);
+        }
+      });
+      extract.on("finish", () => pack.finalize());
+      extract.on("error", (e) => {
+        failed = e;
+        pack.destroy(e);
+      });
+      src.on("error", (e) => extract.destroy(e));
+      src.pipe(extract);
+      await this.docker.getContainer(toId).putArchive(pack as unknown as Readable, { path: parent });
+      if (failed) throw failed;
+    } catch (e) {
+      throw mapDockerError(e);
+    }
+  }
+
   async remove(id: string): Promise<void> {
     try {
       await this.docker.getContainer(id).remove({ force: true, v: true });
@@ -298,6 +343,7 @@ export class DockerRuntime implements Runtime {
       startedAt: c.State?.StartedAt && !c.State.StartedAt.startsWith("0001") ? c.State.StartedAt : null,
       finishedAt: c.State?.FinishedAt && !c.State.FinishedAt.startsWith("0001") ? c.State.FinishedAt : null,
       image: c.Config?.Image ?? "",
+      imageId: c.Image,
       binds,
     };
   }

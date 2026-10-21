@@ -27,6 +27,8 @@ export interface ContainerInfo {
   startedAt: string | null;
   finishedAt: string | null;
   image: string;
+  /** Id of the image the container was created from (changes when the tag is pulled again). */
+  imageId?: string;
   binds: Array<{ source: string; target: string; write: boolean }>;
 }
 
@@ -87,6 +89,13 @@ export interface Runtime {
   start(containerId: string): Promise<void>;
   stop(containerId: string, timeoutSec?: number): Promise<void>;
   restart(containerId: string): Promise<void>;
+  /** Renames a container (used while a desktop is recreated on a new image). */
+  rename(containerId: string, name: string): Promise<void>;
+  /**
+   * Copies a directory tree (with owners and modes) from one container to another, which may be
+   * stopped or only created. Entries at or below `exclude` (absolute paths, e.g. mount points) are skipped.
+   */
+  copyDir(fromContainerId: string, toContainerId: string, dir: string, exclude: string[]): Promise<void>;
   remove(containerId: string): Promise<void>;
   inspect(containerId: string): Promise<ContainerInfo | null>;
   /** All desktop containers owned by this manager instance. */

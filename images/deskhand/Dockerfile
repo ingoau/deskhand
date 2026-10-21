@@ -59,6 +59,7 @@ COPY --from=build /out/ /opt/deskhand/
 # Chrome's seccomp profile: the manager sends its JSON text in SecurityOpt when it creates a desktop.
 COPY images/desktop/chrome-seccomp.json /opt/deskhand/chrome-seccomp.json
 COPY images/deskhand/rootfs/ /
+COPY LICENSE NOTICE /usr/share/doc/deskhand/
 
 # The manager runs as `node` (uid 1000, from the base image); the entrypoint (root) adds the Docker
 # socket's group at runtime and drops privileges. `docker compose exec deskhand deskhand …` runs as root

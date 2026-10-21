@@ -90,6 +90,9 @@ export interface CreateOptions {
 }
 
 const ACTIVE: Array<Desktop["status"]> = ["starting", "running"];
+const AGENT_HOME = "/home/agent";
+/** Name suffix of a desktop's old container while it is recreated on a new image. */
+const PARKED_SUFFIX = "-replaced-";
 
 function rowToDesktop(r: Record<string, unknown>): Desktop {
   return {
@@ -215,7 +218,7 @@ export class DesktopService extends EventEmitter {
   }
 
   async reconcile(): Promise<void> {
-    const containers = await this.runtime.listDesktops();
+    const containers = await this.resolveParked(await this.runtime.listDesktops());
     const seen = new Set<string>();
     for (const c of containers) {
       const id = c.labels[LABELS.id];
@@ -602,10 +605,14 @@ export class DesktopService extends EventEmitter {
         d.status = "starting";
         this.save(d);
       });
+      let upgradedTo: string | null = null;
       try {
-        await this.runtime.ensureImage(d.image).catch(() => undefined);
-        await this.runtime.start(d.containerId!);
-        await this.waitHealthy(d);
+        upgradedTo = await this.recreateOnCurrentImage(d, info);
+        if (!upgradedTo) {
+          await this.runtime.ensureImage(d.image).catch(() => undefined);
+          await this.runtime.start(d.containerId!);
+          await this.waitHealthy(d);
+        }
       } catch (e) {
         d.status = "stopped";
         this.save(d);
@@ -617,9 +624,94 @@ export class DesktopService extends EventEmitter {
       d.stopReason = null;
       d.lastActivityAt = nowIso();
       this.save(d);
-      this.actionLog.record({ desktopId: d.id, tool: "restart", summary: `restarted (${reason ?? "stopped"})`, outcome: "ok", actor: null, session: null });
-      return restartNote(reason, this.cfg.idleTimeoutMs);
+      const summary = `restarted (${reason ?? "stopped"})${upgradedTo ? ` on the updated image ${upgradedTo}` : ""}`;
+      this.actionLog.record({ desktopId: d.id, tool: "restart", summary, outcome: "ok", actor: null, session: null });
+      const note = restartNote(reason, this.cfg.idleTimeoutMs);
+      return upgradedTo ? `${note} deskhand was updated while it was stopped, so it now runs the new desktop image; everything in /home/agent was kept.` : note;
     });
+  }
+
+  // ---------------------------------------------------------------- upgrades
+
+  /**
+   * After a deskhand upgrade (docs/design.md, "Upgrades"): a stopped desktop whose container was created
+   * from an older image than the one its template version resolves to now (for `base`, the manager's
+   * DESKHAND_DESKTOP_IMAGE) is recreated on the current image instead of `docker start`ing the old one.
+   * /home/agent is copied across (without mount points and ~/.cache), so the agent's files survive; the
+   * id, name, labels, mounts, screen and daemon key stay the same. Saved template versions are images of
+   * their own and keep them. Returns the new image when the recreated desktop is healthy; null when nothing
+   * changed or recreation failed, in which case the old container is put back and the caller starts it.
+   */
+  private async recreateOnCurrentImage(d: Desktop, old: ContainerInfo): Promise<string | null> {
+    const target = this.templates.resolveVersion(d.template, d.templateVersion)?.image;
+    if (!old.imageId || !target) return null;
+    let targetId: string | null;
+    try {
+      await this.runtime.ensureImage(target);
+      targetId = (await this.runtime.imageInfo(target))?.id ?? null;
+    } catch (e) {
+      this.log.warn({ desktop: d.id, image: target, err: (e as Error).message }, "current desktop image unavailable; starting the desktop on its old image");
+      return null;
+    }
+    if (!targetId || targetId === old.imageId) return null;
+    const oldId = old.containerId;
+    let fresh: string | null = null;
+    this.log.info({ desktop: d.id, from: old.image, to: target }, "recreating stopped desktop on the updated image");
+    try {
+      await this.runtime.rename(oldId, `${d.name}${PARKED_SUFFIX}${randomId(3)}`);
+      // Same container settings as create(); keep the two in step.
+      fresh = await this.runtime.createDesktop({
+        id: d.id,
+        name: d.name,
+        image: target,
+        env: this.envFor(d),
+        labels: this.labelsFor(d),
+        memoryBytes: this.cfg.desktopMemoryBytes,
+        cpus: this.cfg.desktopCpus,
+        binds: d.mounts.map((m) => ({ source: m.source, target: m.path, write: !!m.write })),
+      });
+      await this.runtime.copyDir(oldId, fresh, AGENT_HOME, [...d.mounts.map((m) => m.path), `${AGENT_HOME}/.cache`]);
+      d.containerId = fresh;
+      this.save(d);
+      await this.runtime.start(fresh);
+      await this.waitHealthy(d);
+    } catch (e) {
+      this.log.warn({ desktop: d.id, err: (e as Error).message }, "recreating the desktop on the updated image failed; starting it on its old image");
+      if (fresh) await this.runtime.remove(fresh).catch(() => undefined);
+      await this.runtime.rename(oldId, d.name).catch(() => undefined);
+      d.containerId = oldId;
+      this.save(d);
+      return null;
+    }
+    d.image = target;
+    this.save(d);
+    await this.runtime.remove(oldId).catch((e) => this.log.warn({ desktop: d.id, err: (e as Error).message }, "could not remove the replaced container"));
+    return target;
+  }
+
+  /**
+   * A manager that died mid-recreation can leave the old container parked as `<name>-replaced-*`. If the new
+   * one got as far as starting (its files were copied first), the parked one goes; otherwise it is put back.
+   */
+  private async resolveParked(containers: ContainerInfo[]): Promise<ContainerInfo[]> {
+    const out = [...containers];
+    for (const p of containers.filter((c) => c.name.includes(PARKED_SUFFIX))) {
+      const id = p.labels[LABELS.id];
+      const sibling = out.find((c) => c !== p && c.labels[LABELS.id] === id);
+      const drop = (c: ContainerInfo) => out.splice(out.indexOf(c), 1);
+      if (sibling?.startedAt) {
+        await this.runtime.remove(p.containerId).catch(() => undefined);
+        drop(p);
+        continue;
+      }
+      if (sibling) {
+        await this.runtime.remove(sibling.containerId).catch(() => undefined);
+        drop(sibling);
+      }
+      p.name = p.name.slice(0, p.name.indexOf(PARKED_SUFFIX));
+      await this.runtime.rename(p.containerId, p.name).catch(() => undefined);
+    }
+    return out;
   }
 
   // ---------------------------------------------------------------- stop / remove

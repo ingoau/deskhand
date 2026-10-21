@@ -171,6 +171,81 @@ describe("desktop lifecycle (fake runtime)", () => {
     await client.close();
   });
 
+  it("recreates a stopped desktop on the updated desktop image after an upgrade, keeping /home/agent", async () => {
+    const t = await manager();
+    const rt = t.runtime as FakeRuntime;
+    const { client } = await connectMcp(t.url, t.token);
+    const id = /Desktop (\w+) is ready/.exec(textOf(await client.callTool({ name: "desktop_start", arguments: { persistent: true } })))![1]!;
+    const oldCid = t.m.desktops.get(id)!.containerId!;
+    const oldRoot = [...rt.containers.values()].find((c) => c.id === oldCid)!.filesRoot;
+    fs.mkdirSync(path.join(oldRoot, "home/agent/.cache"), { recursive: true });
+    fs.writeFileSync(path.join(oldRoot, "home/agent/notes.txt"), "keep me");
+    fs.writeFileSync(path.join(oldRoot, "home/agent/.cache/junk"), "x");
+    expect((await api(t, "POST", `/api/desktops/${id}/stop`)).data.status).toBe("stopped");
+
+    // Same image, nothing to do: the old container is started again.
+    expect((await api(t, "POST", `/api/desktops/${id}/start`)).data.status).toBe("running");
+    expect(t.m.desktops.get(id)!.containerId).toBe(oldCid);
+    await api(t, "POST", `/api/desktops/${id}/stop`);
+
+    // `docker compose pull` brought a new desktop image under the same tag.
+    rt.imageIds.set(t.m.cfg.desktopImage, "sha256:new-desktop-image");
+    const r = await client.callTool({ name: "screenshot", arguments: {} });
+    expect(textOf(r)).toContain("now runs the new desktop image; everything in /home/agent was kept");
+    const d = t.m.desktops.get(id)!;
+    expect(d).toMatchObject({ status: "running", persistent: true });
+    expect(d.containerId).not.toBe(oldCid);
+    expect(rt.containers.has(oldCid)).toBe(false);
+    const fresh = rt.containers.get(d.containerId!)!;
+    expect(fresh.imageId).toBe("sha256:new-desktop-image");
+    expect(fresh.spec.name).toBe(d.name);
+    expect(fresh.spec.labels[LABELS.id]).toBe(id);
+    expect(fs.readFileSync(path.join(fresh.filesRoot, "home/agent/notes.txt"), "utf8")).toBe("keep me");
+    expect(fs.existsSync(path.join(fresh.filesRoot, "home/agent/.cache/junk"))).toBe(false);
+    expect((await api(t, "GET", `/api/desktops/${id}/log`)).data.entries.some((e: { summary: string }) => e.summary.includes("updated image"))).toBe(true);
+    await client.close();
+  });
+
+  it("keeps the old container when recreating on a new image fails", async () => {
+    const t = await manager();
+    const rt = t.runtime as FakeRuntime;
+    const id = (await api(t, "POST", "/api/desktops", {})).data.id;
+    await waitFor(() => t.m.desktops.get(id)?.status === "running");
+    const oldCid = t.m.desktops.get(id)!.containerId!;
+    await api(t, "POST", `/api/desktops/${id}/stop`);
+    rt.imageIds.set(t.m.cfg.desktopImage, "sha256:new-desktop-image");
+    rt.copyDir = async () => {
+      throw new Error("copy failed");
+    };
+    expect((await api(t, "POST", `/api/desktops/${id}/start`)).data.status).toBe("running");
+    const d = t.m.desktops.get(id)!;
+    expect(d.containerId).toBe(oldCid);
+    expect(rt.containers.size).toBe(1);
+    expect(rt.containers.get(oldCid)!.spec.name).toBe(d.name);
+  });
+
+  it("cleans up a container left parked by an interrupted image upgrade", async () => {
+    const runtime = new FakeRuntime({ lockWaitMs: 500 });
+    cleanup.push(() => runtime.destroy());
+    const dataDir = tmpDir();
+    cleanup.push(async () => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const t1 = await startManager({ runtime, dataDir });
+    const id = (await api(t1, "POST", "/api/desktops", {})).data.id;
+    await waitFor(() => t1.m.desktops.get(id)?.status === "running");
+    await api(t1, "POST", `/api/desktops/${id}/stop`);
+    const d = t1.m.desktops.get(id)!;
+    await t1.close({ keepData: true });
+    // Simulate a crash after the rename and create, before the copy finished: the new one never started.
+    await runtime.rename(d.containerId!, `${d.name}-replaced-abc`);
+    const spec = [...runtime.containers.values()][0]!.spec;
+    await runtime.createDesktop({ ...spec, name: d.name });
+    expect(runtime.containers.size).toBe(2);
+    const t2 = await manager({ runtime, dataDir });
+    expect(runtime.containers.size).toBe(1);
+    expect(runtime.containers.get(d.containerId!)!.spec.name).toBe(d.name);
+    expect(t2.m.desktops.get(id)!.containerId).toBe(d.containerId);
+  });
+
   it("restarts a desktop whose daemon stays unhealthy and tells the agent", async () => {
     const t = await manager({ env: { DESKHAND_UNHEALTHY_AFTER: "500ms" } });
     const { client } = await connectMcp(t.url, t.token);

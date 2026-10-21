@@ -37,7 +37,7 @@ RUN mkdir -p /out \
 FROM debian:${DEBIAN_RELEASE}-slim
 ARG DESKHAND_VERSION=0.1.0
 LABEL org.opencontainers.image.title="deskhand-desktop" \
-      org.opencontainers.image.source="https://github.com/deskhand/deskhand" \
+      org.opencontainers.image.source="https://github.com/ingoau/deskhand" \
       org.opencontainers.image.licenses="Apache-2.0" \
       deskhand.kind="desktop-image"
 
@@ -55,7 +55,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       fonts-noto-core fonts-noto-mono fonts-noto-cjk fonts-noto-color-emoji \
       supervisor dbus dbus-x11 at-spi2-core python3 python3-pyatspi gir1.2-atspi-2.0 \
       ca-certificates curl procps psmisc util-linux tzdata less \
- && apt-get clean && rm -rf /var/lib/apt/lists/* /usr/share/doc/* /usr/share/man/* /var/cache/debconf/*-old
+ && apt-get clean && rm -rf /var/lib/apt/lists/* /usr/share/man/* /var/cache/debconf/*-old \
+ && find /usr/share/doc -mindepth 2 ! -type d ! -name copyright -delete \
+ && find /usr/share/doc -mindepth 1 -depth -type d -empty -delete \
+ && test -f /usr/share/doc/chromium/copyright && test -f /usr/share/doc/x11vnc/copyright
+# Debian's per-package /usr/share/doc/<package>/copyright files are the license texts that redistributing
+# GPL/LGPL packages requires; they stay (the slim base's dpkg config already drops the rest of /usr/share/doc).
 
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 
@@ -65,6 +70,7 @@ RUN groupadd -g 1000 agent && useradd -m -u 1000 -g 1000 -s /bin/bash agent \
 
 COPY images/desktop/rootfs/ /
 COPY images/desktop/chrome-seccomp.json /opt/deskhand/chrome-seccomp.json
+COPY LICENSE NOTICE /usr/share/doc/deskhand/
 COPY --from=build /out/ /opt/deskhand/daemon/
 COPY packages/daemon/helpers/uitree.py /opt/deskhand/uitree.py
 
