@@ -15,6 +15,8 @@ export interface Config {
   stoppedRetentionMs: number;
   /** MCP sessions without requests for this long are ended (their ephemeral desktops removed). */
   sessionTimeoutMs: number;
+  /** A session whose client's event stream closed and stayed closed this long ends (0 = never). */
+  sessionDisconnectGraceMs: number;
   logRetentionMs: number;
   /** Thumbnails and log rows of removed desktops are deleted after this. */
   logThumbRetentionMs: number;
@@ -187,6 +189,9 @@ export function parseConfig(env: Env = process.env): Config {
     idleTimeoutMs,
     stoppedRetentionMs,
     sessionTimeoutMs: dur(env.DESKHAND_SESSION_TIMEOUT, "24h", "DESKHAND_SESSION_TIMEOUT"),
+    sessionDisconnectGraceMs: ["0", "off"].includes((env.DESKHAND_SESSION_DISCONNECT_GRACE ?? "").trim())
+      ? 0
+      : dur(env.DESKHAND_SESSION_DISCONNECT_GRACE, "60s", "DESKHAND_SESSION_DISCONNECT_GRACE"),
     logRetentionMs: dur(env.DESKHAND_LOG_RETENTION, "7d", "DESKHAND_LOG_RETENTION"),
     logThumbRetentionMs: dur(env.DESKHAND_LOG_THUMB_RETENTION, "30d", "DESKHAND_LOG_THUMB_RETENTION"),
     templateVersions: int(env.DESKHAND_TEMPLATE_VERSIONS, 5, "DESKHAND_TEMPLATE_VERSIONS", 1),

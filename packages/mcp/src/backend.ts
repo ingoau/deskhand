@@ -20,6 +20,13 @@ export interface Principal {
   name: string;
 }
 
+/**
+ * Why an MCP session ended. `disconnected`: the client's standalone SSE stream (GET /mcp) closed and
+ * was not reopened within the grace period — how most clients (Claude Code included) end, since they
+ * exit without sending DELETE.
+ */
+export type SessionEndReason = "deleted" | "timeout" | "disconnected" | "shutdown";
+
 export interface SessionInfo {
   id: string;
   principal: Principal;
@@ -96,7 +103,7 @@ export interface McpBackend {
 
   sessionOpened(info: SessionInfo): void;
   sessionTouched(sessionId: string): void;
-  sessionClosed(sessionId: string, reason: "deleted" | "timeout" | "shutdown"): Promise<void>;
+  sessionClosed(sessionId: string, reason: SessionEndReason): Promise<void>;
   /** For resuming a session after a manager restart: the stored principal's token id, if the session is still open. */
   knownSession(sessionId: string): { tokenId: string | null; actor: string } | null;
 

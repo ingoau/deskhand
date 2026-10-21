@@ -7,7 +7,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
-import type { McpBackend, Principal, SessionInfo } from "./backend.js";
+import type { McpBackend, Principal, SessionEndReason, SessionInfo } from "./backend.js";
 import { AGENT_INSTRUCTIONS } from "./instructions.js";
 import { SessionState, ToolRegistry } from "./registry.js";
 import { registerTools } from "./tools.js";
@@ -20,11 +20,23 @@ interface LiveSession {
   state: SessionState;
   lastSeen: number;
   inflight: number;
+  /** Open standalone SSE streams (GET /mcp) and when the last one closed. */
+  streams: number;
+  hadStream: boolean;
+  streamClosedAt: number;
 }
 
 export interface McpServiceOptions {
   /** Sessions without requests for this long are ended. */
   sessionTimeoutMs: number;
+  /**
+   * A session whose client had a standalone SSE stream open, and has had none (and no requests) for this
+   * long, is ended as `disconnected`. Clients such as Claude Code exit without DELETE; the dropped stream
+   * is the only sign. 0 disables. Default 60 s (well past the SDK client's reconnect backoff).
+   */
+  disconnectGraceMs?: number;
+  /** SSE comment sent on idle standalone streams so proxies keep them open. Default 25 s; 0 disables. */
+  keepaliveMs?: number;
   sweepIntervalMs?: number;
   logger?: { info: (o: object, m?: string) => void; warn: (o: object, m?: string) => void };
 }
@@ -125,6 +137,9 @@ export class McpService {
       state: new SessionState(),
       lastSeen: Date.now(),
       inflight: 0,
+      streams: 0,
+      hadStream: false,
+      streamClosedAt: 0,
     };
     await server.connect(transport);
     if (resumeId) {
@@ -168,6 +183,7 @@ export class McpService {
         if (!this.backend.principalActive(principal)) return jsonError(res, 401, -32001, "Unauthorized: token revoked");
         s.lastSeen = Date.now();
         this.backend.sessionTouched(sessionId);
+        if (req.method === "GET") this.trackStream(s, res);
         await s.transport.handleRequest(req, res, body);
         return;
       }
@@ -184,7 +200,27 @@ export class McpService {
     }
   }
 
-  async endSession(id: string, reason: "deleted" | "timeout" | "shutdown"): Promise<void> {
+  /** Counts the session's standalone SSE stream while it is open and keeps it alive through proxies. */
+  private trackStream(s: LiveSession, res: ServerResponse): void {
+    s.streams++;
+    s.hadStream = true;
+    const every = this.opts.keepaliveMs ?? 25_000;
+    const ping =
+      every > 0
+        ? setInterval(() => {
+            // An SSE comment line; only between whole events (the SDK writes each event in one chunk).
+            if (res.headersSent && !res.writableEnded && res.statusCode === 200) res.write(": keepalive\n\n");
+          }, every)
+        : null;
+    ping?.unref();
+    res.once("close", () => {
+      if (ping) clearInterval(ping);
+      s.streams--;
+      s.streamClosedAt = Date.now();
+    });
+  }
+
+  async endSession(id: string, reason: SessionEndReason): Promise<void> {
     const s = this.sessions.get(id);
     if (!s) return;
     this.sessions.delete(id);
@@ -194,12 +230,17 @@ export class McpService {
     await this.backend.sessionClosed(id, reason).catch((e) => this.opts.logger?.warn({ err: (e as Error).message }, "session cleanup failed"));
   }
 
-  /** Ends sessions idle past the timeout (and not waiting on a long tool call). */
+  /** Ends sessions idle past the timeout, or whose client went away (not while a tool call is running). */
   async sweep(now = Date.now()): Promise<void> {
+    const grace = this.opts.disconnectGraceMs ?? 60_000;
     for (const [id, s] of this.sessions) {
-      if (s.inflight === 0 && now - s.lastSeen > this.opts.sessionTimeoutMs) {
+      if (s.inflight > 0) continue;
+      if (now - s.lastSeen > this.opts.sessionTimeoutMs) {
         this.opts.logger?.info({ session: id }, "MCP session idle past timeout; ending it");
         await this.endSession(id, "timeout");
+      } else if (grace > 0 && s.hadStream && s.streams === 0 && now - Math.max(s.lastSeen, s.streamClosedAt) > grace) {
+        this.opts.logger?.info({ session: id }, "MCP client disconnected (event stream closed and not reopened); ending the session");
+        await this.endSession(id, "disconnected");
       }
     }
   }

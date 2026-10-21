@@ -65,7 +65,12 @@ export async function createManager(cfg: Config, deps: ManagerDeps = {}): Promis
   templates.inUse = (name, version) => desktops.list().filter((d) => d.template === name && d.templateVersion === version).length;
   const files = new FileService(cfg, runtime, policy, desktops);
   const backend = new ManagerMcpBackend(cfg, db, auth, desktops, templates, actionLog, files, logger);
-  const mcp = new McpService(backend, { sessionTimeoutMs: cfg.sessionTimeoutMs, sweepIntervalMs: Math.min(30_000, cfg.sweepIntervalMs), logger });
+  const mcp = new McpService(backend, {
+    sessionTimeoutMs: cfg.sessionTimeoutMs,
+    disconnectGraceMs: cfg.sessionDisconnectGraceMs,
+    sweepIntervalMs: Math.min(30_000, cfg.sweepIntervalMs),
+    logger,
+  });
 
   const app = Fastify({
     loggerInstance: logger,

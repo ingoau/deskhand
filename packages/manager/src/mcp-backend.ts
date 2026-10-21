@@ -1,7 +1,7 @@
 /** The manager's implementation of the MCP package's backend interface. */
 import type { Logger } from "pino";
 import { DAEMON_API_VERSION, DeskhandError, type TemplateDescription } from "@deskhand/shared";
-import type { DesktopRef, HumanWaitResult, McpBackend, Principal as McpPrincipal, ResolvedDesktop, SessionInfo, StartOptions } from "@deskhand/mcp";
+import type { DesktopRef, HumanWaitResult, McpBackend, Principal as McpPrincipal, ResolvedDesktop, SessionEndReason, SessionInfo, StartOptions } from "@deskhand/mcp";
 import type { Config } from "./config.js";
 import type { DB } from "./db.js";
 import type { AuthService } from "./auth.js";
@@ -108,7 +108,7 @@ export class ManagerMcpBackend implements McpBackend {
     this.db.prepare("UPDATE mcp_sessions SET last_seen_at = ? WHERE id = ?").run(nowIso(), sessionId);
   }
 
-  async sessionClosed(sessionId: string, reason: "deleted" | "timeout" | "shutdown"): Promise<void> {
+  async sessionClosed(sessionId: string, reason: SessionEndReason): Promise<void> {
     this.touched.delete(sessionId);
     this.db.prepare("UPDATE mcp_sessions SET closed_at = ?, close_reason = ? WHERE id = ?").run(nowIso(), reason, sessionId);
     this.log.info({ session: sessionId, reason }, "MCP session ended");
