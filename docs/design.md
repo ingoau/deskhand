@@ -111,3 +111,28 @@ coordinate, text?)`, `mouse_move(coordinate)`, `left_mouse_down()`, `left_mouse_
 - Images: the docs name PNG and JPEG; agent-facing results use those (WebP only for dashboard thumbnails).
 - deskhand extras beyond the toolset: input tools return a settled screenshot; `left_click_drag` accepts
   `duration_ms`/`hold_ms`.
+
+## Manager and MCP implementation notes (phase 2)
+
+- **Runtimes:** `DockerRuntime` (dockerode) and `FakeRuntime` (in-process fake daemons, `DESKHAND_RUNTIME=fake`, for
+  tests and dashboard development). The fake daemon (`packages/manager/src/fake-daemon/fake-daemon.ts`) implements the
+  daemon contract with generated PNGs and test hooks under `/_fake/*`.
+- **Extra config** beyond the plan's table: `DESKHAND_SESSION_TIMEOUT` (24h; an MCP session idle this long ends and
+  its ephemeral desktops are removed — separate from `DESKHAND_IDLE_TIMEOUT`, which only stops desktops),
+  `DESKHAND_PUBLIC_URL` (origin for printed links and the origin check), `DESKHAND_SCREENSHOT_MAX_BYTES` (72k) /
+  `DESKHAND_SCREENSHOT_QUALITY`, `DESKHAND_REQUEST_HUMAN_TIMEOUT` (10m), `DESKHAND_HELPER_IMAGE` (busybox),
+  `DESKHAND_AGENT_UID/GID`, `DESKHAND_DOCKER_SOCKET_PATHS`, `DESKHAND_DASHBOARD_DIR`, `DESKHAND_TRUST_PROXY`,
+  `DESKHAND_OWNER_LABEL` / `DESKHAND_INSTANCE` / `DESKHAND_CONTAINER_PREFIX` (test isolation), health/sweep intervals.
+- **Generation handling** lives in one wrapper (`packages/mcp/src/registry.ts`): before every desktop tool the manager
+  reads `/state`; if the generation moved since the session last saw it and the desktop is unlocked, the result opens
+  with the hand-back note plus a fresh screenshot, and screen-dependent input (clicks, typing, keys…) is **not
+  performed** that call (the agent's coordinates refer to the old screen). `desktop_exec` still runs. The same applies
+  after a restart, a recreation or a lazy start.
+- **Host paths** (mount policy and `file_put`/`file_get`) are resolved by a short-lived busybox helper with `/` mounted
+  read-only at `/host`, walking symlinks relative to the host root; files are copied through the archive API of a
+  created (never started) helper container. The Docker socket and any directory containing it are always refused, as
+  are mount targets that would hide the desktop's system directories (`/etc`, `/usr`, `/tmp`, `/home/agent`, …).
+- **Sessions survive manager restarts:** a request carrying a known, unexpired session id from the same token is
+  resumed without re-initialising. Shutdown never removes desktops.
+- **CLI auth:** the manager writes `<data>/admin.json` (`{url, token}`, mode 0600, rotated each start); the CLI uses it
+  when run inside the manager container. Agent API tokens cannot manage tokens or login links.
