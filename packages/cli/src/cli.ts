@@ -22,6 +22,10 @@ Usage: deskhand [--url URL] [--token TOKEN] <command>
 Desktops
   ls [--json]                       List desktops
   screenshot [desktop] > shot.png   PNG of a desktop (default: the only running one)
+  start [options]                   Start a new desktop:
+        [--template NAME] [--name TITLE] [--persistent]
+        [--memory 8g] [--cpus 4] [--kvm | --no-kvm]   memory/CPU caps and /dev/kvm (default: the
+                                    template's recorded hardware, else the host defaults)
   start <desktop>                   Start a stopped desktop
   stop <desktop>                    Stop a desktop (files kept)
   rm <desktop>                      Remove a desktop
@@ -131,6 +135,20 @@ interface Desktop {
   createdAt: string;
   cpuPercent: number | null;
   memoryBytes: number | null;
+  hardware?: { memoryBytes: number; cpus: number; kvm: boolean };
+}
+
+type TemplateHardware = { kvm: boolean; memoryBytes: number | null; cpus: number | null } | null | undefined;
+
+/** 8589934592 -> "8g". */
+function memArg(bytes: number): string {
+  const gb = bytes / 1024 ** 3;
+  return Number.isInteger(gb) ? `${gb}g` : `${Math.round(bytes / 1024 ** 2)}m`;
+}
+
+function hwText(hw: TemplateHardware): string {
+  if (!hw) return "";
+  return [hw.kvm ? "kvm" : "", hw.memoryBytes ? memArg(hw.memoryBytes) : "", hw.cpus ? `${hw.cpus}cpu` : ""].filter(Boolean).join(",");
 }
 
 interface TemplateRow {
@@ -150,6 +168,7 @@ interface TemplateRow {
   lastFeedback: { kind: string; note: string; at: string; version: number } | null;
   lastConfirmedAt: string | null;
   rebuild?: { status: string; at: string; error: string | null } | null;
+  hardware?: TemplateHardware;
   description: { summary: string; use_when: string; not_for?: string; setup_notes?: string; tags?: string[] };
 }
 
@@ -174,6 +193,7 @@ function flags(t: TemplateRow): string {
     t.recentlyChangedByAgent ? "changed-by-agent" : "",
     t.hasRecipe ? "recipe" : "",
     t.rebuild && t.rebuild.status !== "ok" ? `rebuild-${t.rebuild.status}` : "",
+    hwText(t.hardware),
   ]
     .filter(Boolean)
     .join(",");
@@ -185,7 +205,20 @@ export async function run(argv: string[], io: Io): Promise<number> {
     parsed = parseArgs({
       args: argv,
       allowPositionals: true,
-      options: { url: { type: "string" }, token: { type: "string" }, json: { type: "boolean" }, help: { type: "boolean", short: "h" } },
+      options: {
+        url: { type: "string" },
+        token: { type: "string" },
+        json: { type: "boolean" },
+        help: { type: "boolean", short: "h" },
+        // start (new desktop)
+        template: { type: "string" },
+        name: { type: "string" },
+        persistent: { type: "boolean" },
+        memory: { type: "string" },
+        cpus: { type: "string" },
+        kvm: { type: "boolean" },
+        "no-kvm": { type: "boolean" },
+      },
     });
   } catch (e) {
     io.stderr.write(`${(e as Error).message}\n\n${USAGE}\n`);
@@ -241,7 +274,38 @@ export async function run(argv: string[], io: Io): Promise<number> {
         io.stdout.write(new Uint8Array(await res.arrayBuffer()));
         return 0;
       }
-      case "start":
+      case "start": {
+        const createFlags = ["template", "name", "persistent", "memory", "cpus", "kvm", "no-kvm"] as const;
+        const wantsNew = createFlags.some((f) => values[f] !== undefined);
+        if (sub && !wantsNew) {
+          const d = await json<Desktop>(creds, "POST", `/api/desktops/${encodeURIComponent(sub)}/start`);
+          out(`${d.id} ${d.status}\n`);
+          return 0;
+        }
+        if (sub) throw new CliError(`"start ${sub}" restarts an existing desktop and takes no options; to create a new one, leave out the id`);
+        if (values.kvm && values["no-kvm"]) throw new CliError("pass --kvm or --no-kvm, not both");
+        let cpus: number | undefined;
+        if (values.cpus !== undefined) {
+          cpus = Number(values.cpus);
+          if (!(cpus > 0)) throw new CliError(`--cpus must be a positive number, got "${values.cpus}"`);
+        }
+        const body = {
+          ...(values.template ? { template: values.template } : {}),
+          ...(values.name ? { name: values.name } : {}),
+          ...(values.persistent ? { persistent: true } : {}),
+          ...(values.memory ? { memory: values.memory } : {}),
+          ...(cpus !== undefined ? { cpus } : {}),
+          ...(values.kvm ? { kvm: true } : values["no-kvm"] ? { kvm: false } : {}),
+        };
+        const d = await json<Desktop>(creds, "POST", "/api/desktops", body);
+        if (values.json) {
+          out(JSON.stringify(d, null, 2) + "\n");
+          return 0;
+        }
+        const hw = d.hardware ? `  ${memArg(d.hardware.memoryBytes)} memory, ${d.hardware.cpus} cpus${d.hardware.kvm ? ", kvm" : ""}` : "";
+        out(`${d.id} ${d.status}  ${d.template}:v${d.templateVersion}${hw}\n`);
+        return 0;
+      }
       case "stop": {
         const d = await json<Desktop>(creds, "POST", `/api/desktops/${encodeURIComponent(need(sub, "desktop id"))}/${cmd}`);
         out(`${d.id} ${d.status}\n`);
@@ -315,6 +379,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
             ...(d.tags?.length ? [`tags:        ${d.tags.join(", ")}`] : []),
             `logged in:   ${t.loggedInSites.join(", ") || "-"}`,
             `extensions:  ${t.extensions?.join(", ") || "-"}`,
+            `hardware:    ${hwText(t.hardware) || "host defaults"}`,
             `base:        ${t.baseVersion ?? "-"}${t.outdatedBase ? `  (outdated; current base ${t.currentBaseVersion})` : ""}`,
             `recipe:      ${t.recipe ? `${t.recipe.split("\n").length} lines` : "none"}${t.rebuild ? `  (last rebuild ${t.rebuild.status} ${ago(t.rebuild.at)} ago${t.rebuild.error ? `: ${t.rebuild.error.split("\n")[0]}` : ""})` : ""}`,
             `feedback:    ${t.lastFeedback ? `${t.lastFeedback.kind} on v${t.lastFeedback.version} ${ago(t.lastFeedback.at)} ago: ${t.lastFeedback.note}` : "-"}  (last confirmed ${t.lastConfirmedAt ? `${ago(t.lastConfirmedAt)} ago` : "never"})`,
