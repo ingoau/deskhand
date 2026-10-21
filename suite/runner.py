@@ -275,8 +275,9 @@ def task_two_sessions(ctx: Ctx, mon: Monitor) -> None:
             return
         sa, sb = ma["summary"], mb["summary"]
         ctx.check(T, "separate MCP sessions", sa.get("session") and sa.get("session") != sb.get("session"), {"a": sa.get("session"), "b": sb.get("session")})
-        ctx.check(T, "A has only its read-only mount", sa["mounts"] == [{"path": str(a_dir), "write": False}], sa["mounts"])
-        ctx.check(T, "B has only its writable mount", sb["mounts"] == [{"path": str(b_dir), "write": True}], sb["mounts"])
+        norm = lambda ms: [{"path": m["path"], "write": bool(m.get("write"))} for m in ms]  # the API omits write: false
+        ctx.check(T, "A has only its read-only mount", norm(sa["mounts"]) == [{"path": str(a_dir), "write": False}], sa["mounts"])
+        ctx.check(T, "B has only its writable mount", norm(sb["mounts"]) == [{"path": str(b_dir), "write": True}], sb["mounts"])
         if ma["container"] and mb["container"]:
             ctx.check(T, "container binds match", ma["container"]["binds"] == [f"{a_dir}:{a_dir}:ro"] and mb["container"]["binds"] == [f"{b_dir}:{b_dir}:rw"], [ma["container"]["binds"], mb["container"]["binds"]])
             ctx.check(T, "Chrome seccomp profile + apparmor=unconfined", all(c["container"]["seccomp_profile"] and c["container"]["apparmor_unconfined"] for c in (ma, mb)))
