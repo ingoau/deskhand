@@ -1,0 +1,67 @@
+# deskhand: isolated Linux desktops for AI agents.
+#   docker compose up -d                       start (the log prints a login link and the first API token)
+#   docker compose logs deskhand               see them again
+#   docker compose exec deskhand deskhand ls   the CLI
+#   docker compose pull && docker compose up -d   upgrade (desktops keep running; not managed by compose)
+# Every setting below can be overridden from the shell or a .env file next to this file.
+# Local builds: docker compose -f compose.yaml -f compose.dev.yaml --profile build build
+name: ${DESKHAND_PROJECT:-deskhand}
+
+services:
+  deskhand:
+    image: ghcr.io/ingoau/deskhand:${DESKHAND_VERSION:-latest}
+    restart: unless-stopped
+    ports:
+      # Published address. Keep it on localhost and put Tailscale Serve, Caddy or an SSH tunnel in front.
+      - "${DESKHAND_BIND:-127.0.0.1:7480}:7480"
+    volumes:
+      # The manager is the only container with the Docker socket (root-equivalent); desktops never get it.
+      - ${DESKHAND_DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+      - deskhand-data:/data
+    networks:
+      - desktops
+    stop_grace_period: 20s
+    environment:
+      # Plan defaults ("Manager service" → Configuration).
+      DESKHAND_MAX_DESKTOPS: ${DESKHAND_MAX_DESKTOPS:-8}
+      DESKHAND_MEMORY_BUDGET: ${DESKHAND_MEMORY_BUDGET:-80%}
+      DESKHAND_DESKTOP_MEMORY: ${DESKHAND_DESKTOP_MEMORY:-2g}
+      DESKHAND_DESKTOP_CPUS: ${DESKHAND_DESKTOP_CPUS:-1.5}
+      DESKHAND_IDLE_TIMEOUT: ${DESKHAND_IDLE_TIMEOUT:-30m}
+      DESKHAND_STOPPED_RETENTION: ${DESKHAND_STOPPED_RETENTION:-24h}
+      DESKHAND_LOG_RETENTION: ${DESKHAND_LOG_RETENTION:-7d}
+      DESKHAND_TEMPLATE_VERSIONS: ${DESKHAND_TEMPLATE_VERSIONS:-5}
+      # The published address (used for printed links); the process itself listens on 0.0.0.0:7480.
+      DESKHAND_BIND: ${DESKHAND_BIND:-127.0.0.1:7480}
+      DESKHAND_BASE_PATH: ${DESKHAND_BASE_PATH:-}
+      DESKHAND_AUTH: ${DESKHAND_AUTH:-on}
+      # Public origin when reached through a proxy, e.g. https://desk.example.ts.net (links + origin check).
+      DESKHAND_PUBLIC_URL: ${DESKHAND_PUBLIC_URL:-}
+      # Desktops: image (empty = ghcr.io/ingoau/deskhand-desktop:<this manager's version>), network, sandbox.
+      DESKHAND_DESKTOP_IMAGE: ${DESKHAND_DESKTOP_IMAGE:-}
+      DESKHAND_NETWORK: ${DESKHAND_NETWORK:-deskhand-desktops}
+      DESKHAND_CHROME_SANDBOX: ${DESKHAND_CHROME_SANDBOX:-on}
+      DESKHAND_SCREEN: ${DESKHAND_SCREEN:-1280x800}
+      # Files the agent writes to mounts are owned by this uid/gid on the host (set them to `id -u`/`id -g`).
+      DESKHAND_AGENT_UID: ${DESKHAND_AGENT_UID:-1000}
+      DESKHAND_AGENT_GID: ${DESKHAND_AGENT_GID:-1000}
+      # Optional mount restrictions (comma-separated absolute host paths; none by default).
+      DESKHAND_MOUNT_ALLOW: ${DESKHAND_MOUNT_ALLOW:-}
+      DESKHAND_MOUNT_DENY: ${DESKHAND_MOUNT_DENY:-}
+      # Several deskhand installs on one Docker host: give each its own instance name and network.
+      DESKHAND_INSTANCE: ${DESKHAND_INSTANCE:-}
+      DESKHAND_OWNER_LABEL: ${DESKHAND_OWNER_LABEL:-deskhand}
+      DESKHAND_CONTAINER_PREFIX: ${DESKHAND_CONTAINER_PREFIX:-deskhand-}
+      DESKHAND_LOG_LEVEL: ${DESKHAND_LOG_LEVEL:-info}
+      # Passed through to every desktop; without them desktops use UTC and C.UTF-8.
+      TZ: ${TZ:-}
+      LANG: ${LANG:-}
+
+networks:
+  desktops:
+    # Desktops are attached here by the manager (they publish no ports). Not internal: desktops browse the web.
+    name: ${DESKHAND_NETWORK:-deskhand-desktops}
+
+volumes:
+  deskhand-data:
+    name: ${DESKHAND_DATA_VOLUME:-deskhand-data}

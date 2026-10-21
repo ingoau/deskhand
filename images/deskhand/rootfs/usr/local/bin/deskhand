@@ -1,0 +1,3 @@
+#!/bin/sh
+# The deskhand CLI. Inside the manager container it authenticates with /data/admin.json.
+exec node /opt/deskhand/app/packages/cli/dist/main.js "$@"

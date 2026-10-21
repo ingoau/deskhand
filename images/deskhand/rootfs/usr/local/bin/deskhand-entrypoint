@@ -1,0 +1,40 @@
+#!/bin/sh
+# deskhand manager entrypoint. Runs as root only long enough to:
+#  1. find the Docker socket's group id (it differs per host) and give the `node` user that group,
+#  2. make sure the data directory belongs to `node`,
+# then drops to `node` with no capabilities. If the socket is not reachable through its group
+# (e.g. mode 0600), it warns and keeps running as root, since the manager cannot work without it.
+set -eu
+
+run_uid="$(id -u node)"
+run_gid="$(id -g node)"
+data="${DESKHAND_DATA_DIR:-/data}"
+
+if [ "$(id -u)" != 0 ]; then
+  exec "$@"
+fi
+
+mkdir -p "$data"
+if [ "$(stat -c %u "$data")" != "$run_uid" ]; then
+  chown -R "$run_uid:$run_gid" "$data"
+fi
+
+sock=""
+for s in ${DESKHAND_DOCKER_SOCKET:-/var/run/docker.sock /run/docker.sock}; do
+  if [ -S "$s" ]; then sock="$s"; break; fi
+done
+
+log() { printf '{"level":%s,"svc":"deskhand-entrypoint","msg":"%s"}\n' "$1" "$2" >&2; }
+
+if [ -z "$sock" ]; then
+  log 40 "no Docker socket mounted at /var/run/docker.sock; desktops cannot start until it is"
+  exec setpriv --reuid="$run_uid" --regid="$run_gid" --init-groups --inh-caps=-all -- "$@"
+fi
+
+sock_gid="$(stat -c %g "$sock")"
+if setpriv --reuid="$run_uid" --regid="$run_gid" --groups="$sock_gid" --inh-caps=-all -- sh -c "test -r '$sock' && test -w '$sock'"; then
+  exec setpriv --reuid="$run_uid" --regid="$run_gid" --groups="$sock_gid" --inh-caps=-all -- "$@"
+fi
+
+log 40 "the Docker socket ($sock, gid $sock_gid) is not group read/writable; running the manager as root"
+exec "$@"

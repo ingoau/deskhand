@@ -1,0 +1,19 @@
+# Local builds instead of GHCR images, tagged :dev (or :$DESKHAND_DEV_TAG):
+#   docker compose -f compose.yaml -f compose.dev.yaml --profile build build   # both images
+#   docker compose -f compose.yaml -f compose.dev.yaml up -d
+services:
+  deskhand:
+    image: deskhand:${DESKHAND_DEV_TAG:-dev}
+    build:
+      context: .
+      dockerfile: images/deskhand/Dockerfile
+    environment:
+      DESKHAND_DESKTOP_IMAGE: ${DESKHAND_DESKTOP_IMAGE:-deskhand-desktop:${DESKHAND_DEV_TAG:-dev}}
+
+  # Only builds the desktop image (never started; the manager starts desktops itself).
+  desktop-image:
+    image: deskhand-desktop:${DESKHAND_DEV_TAG:-dev}
+    build:
+      context: .
+      dockerfile: images/desktop/Dockerfile
+    profiles: [build]

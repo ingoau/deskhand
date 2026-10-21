@@ -179,8 +179,31 @@ export class DockerRuntime implements Runtime {
     if (!(await this.imageExists(image))) throw new DeskhandError("image_pull_failed");
   }
 
+  private apparmor: Promise<boolean> | null = null;
+
+  /** Whether the engine confines containers with AppArmor (docker info SecurityOptions has name=apparmor). */
+  private hasAppArmor(): Promise<boolean> {
+    this.apparmor ??= this.docker
+      .info()
+      .then((i: { SecurityOptions?: string[] }) => (i.SecurityOptions ?? []).some((o) => /(^|,)name=apparmor(,|$)/.test(o)))
+      .catch(() => true);
+    return this.apparmor;
+  }
+
+  /**
+   * Chrome's user-namespace sandbox needs unshare(CLONE_NEWUSER): allowed by the shipped seccomp profile,
+   * and blocked by docker-default AppArmor, hence apparmor=unconfined (docs/design.md, "Chromium sandbox").
+   */
+  private async securityOpt(): Promise<string[] | undefined> {
+    if (!this.cfg.chromeSeccomp) return undefined;
+    const opts = [`seccomp=${this.cfg.chromeSeccomp}`];
+    if (await this.hasAppArmor()) opts.push("apparmor=unconfined");
+    return opts;
+  }
+
   async createDesktop(spec: DesktopSpec): Promise<string> {
     await this.ensureNetwork();
+    const securityOpt = await this.securityOpt();
     try {
       const c = await this.docker.createContainer({
         name: spec.name,
@@ -193,6 +216,7 @@ export class DockerRuntime implements Runtime {
           Memory: spec.memoryBytes,
           NanoCpus: Math.round(spec.cpus * 1e9),
           ShmSize: 1024 ** 3,
+          ...(securityOpt ? { SecurityOpt: securityOpt } : {}),
           Binds: spec.binds.map((b) => `${b.source}:${b.target}:${b.write ? "rw" : "ro"}`),
           RestartPolicy: { Name: "no" },
         },

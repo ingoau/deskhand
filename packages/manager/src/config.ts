@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_PORT, DESKHAND_VERSION } from "@deskhand/shared";
@@ -18,7 +19,12 @@ export interface Config {
   /** Thumbnails and log rows of removed desktops are deleted after this. */
   logThumbRetentionMs: number;
   templateVersions: number;
+  /** Where users reach the manager (DESKHAND_BIND; in compose: the published host address). */
   bind: { host: string; port: number };
+  /** Where the process listens: DESKHAND_LISTEN, else `bind` (compose sets 0.0.0.0:7480). */
+  listen: { host: string; port: number };
+  /** DESKHAND_LISTEN was set, so `bind` is the published address rather than the listen address. */
+  listenSeparate: boolean;
   basePath: string;
   auth: boolean;
   /** Public origin + base, used in printed login links, e.g. https://desk.example.ts.net */
@@ -45,6 +51,11 @@ export interface Config {
   statsIntervalMs: number;
   startTimeoutMs: number;
   helperImage: string;
+  /**
+   * Chrome's seccomp profile (minified JSON text) for desktops, so Chromium's sandbox works; null when
+   * DESKHAND_CHROME_SANDBOX=off. Sent with apparmor=unconfined (see docs/design.md, "Chromium sandbox").
+   */
+  chromeSeccomp: string | null;
   agentUid: number;
   agentGid: number;
   screen: { width: number; height: number };
@@ -100,6 +111,36 @@ export function parseBind(v: string | undefined): { host: string; port: number }
   return { host: m[1] ?? (m[2] || "0.0.0.0"), port: Number(m[3]) };
 }
 
+/**
+ * DESKHAND_CHROME_SANDBOX=on (default): read DESKHAND_SECCOMP_PROFILE, else the manager image's copy,
+ * else the repo's images/desktop/chrome-seccomp.json. Returned minified: the Docker API takes the
+ * profile's JSON text in HostConfig.SecurityOpt (the CLI takes a path).
+ */
+export function loadChromeSeccomp(env: Env): string | null {
+  if (!bool(env.DESKHAND_CHROME_SANDBOX, true, "DESKHAND_CHROME_SANDBOX")) return null;
+  const explicit = env.DESKHAND_SECCOMP_PROFILE?.trim();
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = explicit ? [explicit] : ["/opt/deskhand/chrome-seccomp.json", path.resolve(here, "../../../images/desktop/chrome-seccomp.json")];
+  for (const p of candidates) {
+    let text: string;
+    try {
+      text = fs.readFileSync(p, "utf8");
+    } catch {
+      continue;
+    }
+    try {
+      return JSON.stringify(JSON.parse(text));
+    } catch {
+      throw new Error(`the seccomp profile ${p} is not valid JSON`);
+    }
+  }
+  throw new Error(
+    explicit
+      ? `DESKHAND_SECCOMP_PROFILE ${explicit} cannot be read`
+      : "Chrome's seccomp profile (chrome-seccomp.json) was not found; set DESKHAND_SECCOMP_PROFILE, or DESKHAND_CHROME_SANDBOX=off",
+  );
+}
+
 function defaultDashboardDir(): string {
   // packages/manager/{src,dist}/config.* -> packages/dashboard/dist
   const here = path.dirname(fileURLToPath(import.meta.url));
@@ -150,6 +191,8 @@ export function parseConfig(env: Env = process.env): Config {
     logThumbRetentionMs: dur(env.DESKHAND_LOG_THUMB_RETENTION, "30d", "DESKHAND_LOG_THUMB_RETENTION"),
     templateVersions: int(env.DESKHAND_TEMPLATE_VERSIONS, 5, "DESKHAND_TEMPLATE_VERSIONS", 1),
     bind: parseBind(env.DESKHAND_BIND),
+    listen: parseBind(env.DESKHAND_LISTEN || env.DESKHAND_BIND),
+    listenSeparate: !!env.DESKHAND_LISTEN,
     basePath: normalizeBasePath(env.DESKHAND_BASE_PATH),
     auth: bool(env.DESKHAND_AUTH, true, "DESKHAND_AUTH"),
     publicUrl,
@@ -178,6 +221,7 @@ export function parseConfig(env: Env = process.env): Config {
     statsIntervalMs: dur(env.DESKHAND_STATS_INTERVAL, "5s", "DESKHAND_STATS_INTERVAL"),
     startTimeoutMs: dur(env.DESKHAND_START_TIMEOUT, "60s", "DESKHAND_START_TIMEOUT"),
     helperImage: env.DESKHAND_HELPER_IMAGE || "busybox:1.37",
+    chromeSeccomp: runtime === "fake" ? null : loadChromeSeccomp(env),
     agentUid: int(env.DESKHAND_AGENT_UID, 1000, "DESKHAND_AGENT_UID"),
     agentGid: int(env.DESKHAND_AGENT_GID, 1000, "DESKHAND_AGENT_GID"),
     screen: { width: Number(screenM[1]), height: Number(screenM[2]) },

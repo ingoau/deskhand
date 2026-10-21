@@ -103,7 +103,8 @@ export async function createManager(cfg: Config, deps: ManagerDeps = {}): Promis
   let origin = "";
   const publicOrigin = () => {
     if (cfg.publicUrl) return new URL(cfg.publicUrl).origin;
-    if (origin) return origin;
+    // In compose the process listens on 0.0.0.0:7480 (DESKHAND_LISTEN) and DESKHAND_BIND is the published address.
+    if (origin && !cfg.listenSeparate) return origin;
     const host = cfg.bind.host === "0.0.0.0" || cfg.bind.host === "::" ? "127.0.0.1" : cfg.bind.host.includes(":") ? `[${cfg.bind.host}]` : cfg.bind.host;
     return `http://${host}:${cfg.bind.port}`;
   };
@@ -143,9 +144,9 @@ export async function createManager(cfg: Config, deps: ManagerDeps = {}): Promis
     publicOrigin,
     async listen() {
       await desktops.init();
-      const address = await app.listen({ host: cfg.bind.host, port: cfg.bind.port });
+      const address = await app.listen({ host: cfg.listen.host, port: cfg.listen.port });
       const port = (app.server.address() as { port: number }).port;
-      const host = cfg.bind.host === "0.0.0.0" || cfg.bind.host === "::" ? "127.0.0.1" : cfg.bind.host;
+      const host = cfg.listen.host === "0.0.0.0" || cfg.listen.host === "::" ? "127.0.0.1" : cfg.listen.host;
       origin = `http://${host.includes(":") ? `[${host}]` : host}:${port}`;
       auth.writeAdminCredential(`${origin}${cfg.basePath}`);
       const first = auth.initFirstStart();

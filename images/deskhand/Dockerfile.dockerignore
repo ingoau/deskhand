@@ -1,0 +1,14 @@
+**/node_modules
+**/dist
+**/coverage
+**/test-results
+**/playwright-report
+**/*.tsbuildinfo
+.git
+.claude
+docs
+*.md
+!packages/**/*.md
+packages/daemon/test
+packages/dashboard/screenshots
+images/desktop/rootfs

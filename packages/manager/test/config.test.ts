@@ -125,3 +125,25 @@ describe("parseBind and normalizeBasePath", () => {
     expect(normalizeBasePath("//a//b")).toBe("/a/b");
   });
 });
+
+describe("compose settings", () => {
+  it("listens on DESKHAND_LISTEN and keeps DESKHAND_BIND as the published address", () => {
+    const c = parseConfig({ DESKHAND_LISTEN: "0.0.0.0:7480", DESKHAND_BIND: "127.0.0.1:17480" });
+    expect(c.listen).toEqual({ host: "0.0.0.0", port: 7480 });
+    expect(c.bind).toEqual({ host: "127.0.0.1", port: 17480 });
+    expect(c.listenSeparate).toBe(true);
+    const d = parseConfig({ DESKHAND_BIND: "127.0.0.1:17480" });
+    expect(d.listen).toEqual(d.bind);
+    expect(d.listenSeparate).toBe(false);
+  });
+  it("loads Chrome's seccomp profile as minified JSON unless DESKHAND_CHROME_SANDBOX=off", () => {
+    const on = parseConfig({});
+    expect(on.chromeSeccomp).toBeTruthy();
+    const profile = JSON.parse(on.chromeSeccomp!) as { syscalls: Array<{ names: string[]; action: string }> };
+    expect(profile.syscalls.some((s) => s.names.includes("unshare") && s.action === "SCMP_ACT_ALLOW")).toBe(true);
+    expect(on.chromeSeccomp).not.toContain("\n");
+    expect(parseConfig({ DESKHAND_CHROME_SANDBOX: "off" }).chromeSeccomp).toBeNull();
+    expect(() => parseConfig({ DESKHAND_SECCOMP_PROFILE: "/nonexistent/profile.json" })).toThrow(/cannot be read/);
+    expect(() => parseConfig({ DESKHAND_CHROME_SANDBOX: "maybe" })).toThrow(/on or off/);
+  });
+});
