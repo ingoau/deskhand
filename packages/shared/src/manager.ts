@@ -89,6 +89,8 @@ export const SystemSummary = z.object({
   memoryBudgetBytes: z.number(),
   logDiskBytes: z.number(),
   auth: z.boolean(),
+  /** Host problems worth the operator's attention (e.g. Chromium's sandbox unavailable); shown in settings. */
+  warnings: z.array(z.string()).optional(),
 });
 export type SystemSummary = z.infer<typeof SystemSummary>;
 

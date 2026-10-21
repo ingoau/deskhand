@@ -49,6 +49,8 @@ interface Behavior {
   unhealthy: boolean;
   /** Report this apiVersion from /health and /state. */
   apiVersion?: number;
+  /** Reported as /state's chromiumSandbox (tests). */
+  chromiumSandbox?: "on" | "off" | null;
   /** Raw output of the manager's template manifest probe (FakeRuntime.exec of a "# deskhand-manifest" script). */
   manifest?: unknown;
   /** Number of /quiesce calls (read back by tests). */
@@ -280,6 +282,7 @@ export class FakeDaemon {
       uptimeSec: (Date.now() - this.startedAt) / 1000,
       heldButtons: this.heldButtons,
       cdpAvailable: false,
+      ...(this.behavior.chromiumSandbox !== undefined ? { chromiumSandbox: this.behavior.chromiumSandbox } : {}),
     };
   }
 

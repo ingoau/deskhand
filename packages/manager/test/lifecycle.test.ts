@@ -246,6 +246,20 @@ describe("desktop lifecycle (fake runtime)", () => {
     expect(t2.m.desktops.get(id)!.containerId).toBe(d.containerId);
   });
 
+  it("warns the operator when a desktop reports Chromium's sandbox off although it is configured on", async () => {
+    const t = await manager();
+    const rt = t.runtime as FakeRuntime;
+    // The fake runtime config has no seccomp profile (sandbox "off" by config): no warning then.
+    const id = (await api(t, "POST", "/api/desktops", {})).data.id;
+    await waitFor(() => t.m.desktops.get(id)?.status === "running");
+    rt.daemonFor(id)!.behavior.chromiumSandbox = "off";
+    await new Promise((r) => setTimeout(r, 500));
+    expect((await api(t, "GET", "/api/system")).data.warnings).toEqual([]);
+    (t.m.cfg as { chromeSeccomp: string | null }).chromeSeccomp = "{}";
+    await waitFor(async () => ((await api(t, "GET", "/api/system")).data.warnings ?? []).length === 1, { what: "sandbox warning" });
+    expect((await api(t, "GET", "/api/system")).data.warnings[0]).toContain("apparmor_restrict_unprivileged_userns");
+  });
+
   it("restarts a desktop whose daemon stays unhealthy and tells the agent", async () => {
     const t = await manager({ env: { DESKHAND_UNHEALTHY_AFTER: "500ms" } });
     const { client } = await connectMcp(t.url, t.token);

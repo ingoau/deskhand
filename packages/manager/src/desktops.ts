@@ -22,6 +22,7 @@ import type { DB } from "./db.js";
 import type { ContainerInfo, Runtime } from "./runtime/types.js";
 import type { MountPolicy, ResolvedMount } from "./mounts.js";
 import type { ActionLog } from "./actionlog.js";
+import fs from "node:fs";
 import { formatDuration, KeyedMutex, nowIso, randomId, secret, sleep } from "./util.js";
 
 export type StopReason = "idle" | "user" | "agent" | "exited" | "unhealthy" | "manager";
@@ -202,6 +203,7 @@ export class DesktopService extends EventEmitter {
 
   /** Reconciles the DB with containers found by label, then starts the background loops. */
   async init(): Promise<void> {
+    this.probeUserns();
     try {
       await this.runtime.ping();
       const host = await this.runtime.hostInfo();
@@ -564,6 +566,7 @@ export class DesktopService extends EventEmitter {
             );
           }
           l.state = await client.state(3000).catch(() => null);
+          this.checkSandbox(d, l.state);
           l.unhealthySince = null;
           return;
         } catch (e) {
@@ -629,6 +632,50 @@ export class DesktopService extends EventEmitter {
       const note = restartNote(reason, this.cfg.idleTimeoutMs);
       return upgradedTo ? `${note} deskhand was updated while it was stopped, so it now runs the new desktop image; everything in /home/agent was kept.` : note;
     });
+  }
+
+  // ---------------------------------------------------------------- host warnings
+
+  private sandboxWarning: string | null = null;
+
+  /** Operator-facing host warnings (GET /api/system, dashboard settings). */
+  warnings(): string[] {
+    return this.sandboxWarning ? [this.sandboxWarning] : [];
+  }
+
+  private setSandboxWarning(msg: string, extra: Record<string, unknown> = {}) {
+    if (this.sandboxWarning) return;
+    this.sandboxWarning = msg;
+    this.log.warn(extra, msg);
+  }
+
+  /**
+   * Ubuntu 23.10+ (kernel.apparmor_restrict_unprivileged_userns=1, also GitHub's ubuntu-24.04 runners) blocks
+   * the user namespaces Chromium's sandbox needs, whatever the container's seccomp/AppArmor options; desktops
+   * then fall back to --no-sandbox. kernel.* sysctls are not namespaced, so the manager container can read it.
+   */
+  private probeUserns() {
+    if (!this.cfg.chromeSeccomp || this.runtime.kind !== "docker") return;
+    let v = "";
+    try {
+      v = fs.readFileSync("/proc/sys/kernel/apparmor_restrict_unprivileged_userns", "utf8").trim();
+    } catch {
+      return; // not an Ubuntu-style kernel
+    }
+    if (v === "1") {
+      this.setSandboxWarning(
+        "This host sets kernel.apparmor_restrict_unprivileged_userns=1 (Ubuntu 23.10+), which blocks Chromium's sandbox in desktops; they will run Chromium with --no-sandbox. To keep the sandbox: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 (persist it in /etc/sysctl.d/). See docs/security.md.",
+      );
+    }
+  }
+
+  /** A desktop reported Chromium running without its sandbox although DESKHAND_CHROME_SANDBOX is on. */
+  private checkSandbox(d: Desktop, st: DaemonState | null) {
+    if (this.sandboxWarning || !this.cfg.chromeSeccomp || st?.chromiumSandbox !== "off") return;
+    this.setSandboxWarning(
+      `Chromium in desktop ${d.id} runs without its renderer sandbox (--no-sandbox) although DESKHAND_CHROME_SANDBOX=on: the host blocks the user namespaces it needs (on Ubuntu 23.10+: kernel.apparmor_restrict_unprivileged_userns=1). See docs/security.md.`,
+      { desktop: d.id },
+    );
   }
 
   // ---------------------------------------------------------------- upgrades
@@ -891,6 +938,7 @@ export class DesktopService extends EventEmitter {
       try {
         if (!l.daemonUrl) throw new Error("no daemon url");
         l.state = await this.daemon(d).state(3000);
+        this.checkSandbox(d, l.state);
         l.unhealthySince = null;
       } catch {
         const info = d.containerId ? await this.runtime.inspect(d.containerId).catch(() => undefined) : null;

@@ -1,0 +1,20 @@
+#!/bin/sh
+# deskhand CLI wrapper for the Docker host: runs `deskhand …` inside the manager container, so it works
+# from any directory (no compose file needed). Copy it onto your PATH, e.g.
+#   curl -fsSL https://raw.githubusercontent.com/ingoau/deskhand/main/scripts/deskhand -o ~/.local/bin/deskhand
+#   chmod +x ~/.local/bin/deskhand
+#   deskhand ls
+#   deskhand screenshot > shot.png
+# Env: DESKHAND_PROJECT (compose project name, default deskhand).
+set -eu
+project="${DESKHAND_PROJECT:-deskhand}"
+cid="$(docker ps -q --filter "label=com.docker.compose.project=$project" --filter "label=com.docker.compose.service=deskhand" | head -n 1)"
+if [ -z "$cid" ]; then
+  echo "deskhand: no running manager container for compose project \"$project\" (start it with \`docker compose up -d\`, or set DESKHAND_PROJECT)" >&2
+  exit 1
+fi
+# A TTY only when both ends are terminals, so `deskhand screenshot > shot.png` gets clean bytes.
+if [ -t 0 ] && [ -t 1 ]; then
+  exec docker exec -it "$cid" deskhand "$@"
+fi
+exec docker exec -i "$cid" deskhand "$@"

@@ -116,6 +116,18 @@ export function Settings() {
           </dl>
         </Section>
 
+        {system?.warnings?.length ? (
+          <Section title="host warnings">
+            <ul className="space-y-1" data-testid="host-warnings">
+              {system.warnings.map((w) => (
+                <li key={w} className="text-amber">
+                  {w}
+                </li>
+              ))}
+            </ul>
+          </Section>
+        ) : null}
+
         <Section title="about">
           <dl className="grid grid-cols-[140px_1fr] gap-y-1">
             <dt className="text-faint">version</dt>
