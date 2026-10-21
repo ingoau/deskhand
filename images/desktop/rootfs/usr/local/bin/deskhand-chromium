@@ -1,0 +1,57 @@
+#!/bin/bash
+# The one way Chromium starts in a deskhand desktop (panel launcher, `chromium` on PATH, xdg-open,
+# and the daemon's on-demand launch for CDP). Remote debugging on 127.0.0.1:9222 only; the daemon's
+# authenticated /cdp proxy is the way in.
+REAL=/usr/bin/chromium
+PROFILE="${DESKHAND_CHROMIUM_PROFILE:-$HOME/.config/chromium}"
+STATE_DIR="${XDG_RUNTIME_DIR:-/tmp}"
+mkdir -p "$PROFILE"
+
+if [ "$(id -u)" = 0 ]; then
+  echo "deskhand-chromium: refusing to run as root; run it as the agent user" >&2
+  exit 1
+fi
+
+# Stale profile lock: Chromium refuses to start if SingletonLock points at another host (every desktop
+# started from a template has a new hostname) or at a process that no longer exists.
+if [ -L "$PROFILE/SingletonLock" ]; then
+  target="$(readlink "$PROFILE/SingletonLock")"   # "<hostname>-<pid>"
+  lock_host="${target%-*}"; lock_pid="${target##*-}"
+  if [ "$lock_host" != "$(hostname)" ] || ! kill -0 "$lock_pid" 2>/dev/null; then
+    rm -f "$PROFILE/SingletonLock" "$PROFILE/SingletonCookie" "$PROFILE/SingletonSocket"
+  fi
+fi
+# A template saved while Chromium was running may say it crashed; don't show the restore bubble.
+if [ -f "$PROFILE/Default/Preferences" ]; then
+  sed -i 's/"exit_type":"Crashed"/"exit_type":"Normal"/; s/"exited_cleanly":false/"exited_cleanly":true/' \
+    "$PROFILE/Default/Preferences" 2>/dev/null || true
+fi
+
+flags=(
+  --remote-debugging-port=9222
+  --remote-debugging-address=127.0.0.1
+  --remote-allow-origins=*
+  --force-renderer-accessibility
+  --user-data-dir="$PROFILE"
+  --no-first-run
+  --start-maximized
+  --no-default-browser-check
+  --password-store=basic
+  --disable-features=Translate,MediaRouter,DialMediaRouteProvider
+  --disable-session-crashed-bubble
+  --hide-crash-restore-bubble
+)
+
+# Chrome's sandbox needs unprivileged user namespaces, which the container only gets with
+# images/desktop/chrome-seccomp.json (and apparmor=unconfined where AppArmor is on). Without them,
+# fall back to --no-sandbox and record it so the daemon can report it.
+if unshare --user --map-root-user true 2>/dev/null; then
+  echo on > "$STATE_DIR/deskhand-chromium-sandbox"
+else
+  flags+=(--no-sandbox --test-type)
+  echo off > "$STATE_DIR/deskhand-chromium-sandbox"
+  echo "deskhand-chromium: user namespaces unavailable; starting with --no-sandbox (start the container with chrome-seccomp.json to enable the sandbox)" >&2
+fi
+
+export ACCESSIBILITY_ENABLED=1
+exec "$REAL" "${flags[@]}" "$@"

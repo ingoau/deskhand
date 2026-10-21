@@ -30,11 +30,30 @@ human ──dashboard─┘   Fastify, SQLite,     │      Xvfb :0 (agent) · o
 - The daemon runs as **root** (reads the key, runs `exec` as `agent` via uid/gid, writes files owned by
   `agent`); Xvfb, the WM, VNC and apps run as `agent`.
 - Chromium is started through one wrapper, `/usr/local/bin/deskhand-chromium` (remote debugging on
-  127.0.0.1:9222, `--force-renderer-accessibility`, stale-profile-lock cleanup, `--disable-dev-shm-usage` is NOT
-  used: the container gets `shm_size: 1g`; sandbox on via Chrome's seccomp profile — fall back to
-  `--no-sandbox` only if the spike shows the sandbox cannot start, and record it). The panel launcher and the
-  daemon's on-demand launch use the same wrapper, so CDP works however Chromium was opened.
-- Daemon auth: `Authorization: Bearer <key>` on every route except `GET /health`.
+  127.0.0.1:9222, `--force-renderer-accessibility` plus `ACCESSIBILITY_ENABLED=1` — without the env var Chromium
+  never joins the AT-SPI bus (spike) —, stale-profile-lock cleanup, `--start-maximized`; `--disable-dev-shm-usage`
+  is NOT used: the container gets `shm_size: 1g`). The panel launcher, `chromium` on PATH (symlink),
+  `x-www-browser`/xdg-open and the daemon's on-demand launch all use the same wrapper, so CDP works however
+  Chromium was opened.
+- **Chromium sandbox (spike result):** Chrome's user-namespace sandbox needs `unshare(CLONE_NEWUSER)`, which
+  Docker's default seccomp profile blocks, and on AppArmor hosts (Debian 13 here) the `docker-default` AppArmor
+  profile blocks it too. The image ships `images/desktop/chrome-seccomp.json` (also at
+  `/opt/deskhand/chrome-seccomp.json`): Docker 26's default profile plus one rule allowing `clone`, `unshare`,
+  `setns`. **The manager should start desktops with** `SecurityOpt: ["seccomp=<JSON content of that file>",
+  "apparmor=unconfined"]` (the Docker API takes the profile's JSON text, the CLI takes a path). The wrapper probes
+  `unshare --user` and, if it fails (plain `docker run`), starts Chromium with `--no-sandbox`, logs a warning and
+  reports `chromiumSandbox: "off"` in `/state`. Trade-off: `apparmor=unconfined` loosens the container's own
+  confinement a little in exchange for Chrome's renderer sandbox; seccomp stays on and no capabilities are added.
+- Other container settings the manager should use: `ShmSize` 1 GiB, memory/CPU caps from config. Optional env
+  (mainly for tests): `DESKHAND_LOCK_WAIT_MS` (default 30000), `DESKHAND_STUCK_BUTTON_MS` (30000),
+  `DESKHAND_LOG_LEVEL` (info).
+- Base: Debian trixie slim + Node 24 (copied from `node:24-trixie-slim`); daemon bundled with esbuild to
+  `/opt/deskhand/daemon/daemon.mjs`, sharp installed next to it per arch. Apps: Chromium, Firefox ESR, pcmanfm
+  (GTK), mousepad (GTK), ristretto (GTK image viewer), FeatherPad (Qt 6), xterm; Noto core/mono/CJK/colour emoji.
+  `/etc/deskhand-versions.json` lists versions. ~1.7 GB uncompressed (amd64).
+- x11vnc gets `ulimit -n 1024`: under Docker's default nofile limit (~10⁹) it loops over every fd and never
+  reaches `accept()`.
+- Daemon auth: `Authorization: Bearer <key>` on every route except `GET /health` (websocket upgrades too).
 
 ## Lock, generation, hand-back (owned by the daemon)
 
@@ -51,7 +70,57 @@ human ──dashboard─┘   Fastify, SQLite,     │      Xvfb :0 (agent) · o
   (KeyEvent, PointerEvent, ClientCutText) unless `mode=control`, the desktop is locked, and the connection's
   generation is current. When the generation changes, control connections from the old generation are closed.
   (Plan said "VNC server starts with input disabled"; filtering in the proxy is the same guarantee, enforced
-  in the one process that already owns the lock.)
+  in the one process that already owns the lock.) The filter parses the RFB 3.7/3.8 client handshake and every
+  client message (incl. extended clipboard, EnableContinuousUpdates, fences, QEMU key/audio, GII,
+  SetDesktopSize, xvp); input-like messages are dropped unless allowed, xvp always; anything it cannot frame
+  closes the connection. View connections stay open across generation changes; control ones get close code 4001.
+- Details as built (phase 1): a request whose `actor` equals the lock holder is not blocked by the lock;
+  `POST /lock`/`DELETE /lock` abort the action that is running (it returns `control_changed`) and release held
+  buttons/keys (the next result's `notes` say so). `/exec` does the same lock wait and generation check but is
+  not queued behind input. `CDP` traffic is not gated by the daemon (it can't see tool boundaries); the manager
+  checks `/state` before forwarding `browser_*` calls.
+
+## Daemon input pipeline (phase 1)
+
+- `POST /input`: per-desktop serial queue → lock wait/generation check → deadline (default 10 s, always at least
+  the action's own duration + 10 s, so `hold_key`/`wait` up to 300 s work) → XTEST events → settle (screen
+  unchanged 300 ms, cap 3 s, `unsettled: true` at the cap) → screenshot (PNG unless `format`) → cursor + notes.
+  On timeout or control change everything held is released.
+- XTEST through node-x11 (no xdotool per step). `type` binds keysyms without a keycode (non-ASCII, emoji) to
+  spare keycodes with `ChangeKeyboardMapping` in batches and restores them afterwards. `key` accepts xdotool names
+  and common aliases (Enter, Backspace, ArrowDown, PageDown, cmd/super, ctrl++, space-separated sequences).
+- Drag = plan's sequence (hover 50 ms, press, 5 px nudge, 15–25 cubic-eased steps over `duration_ms`, hold
+  `hold_ms`, release). `mouse_move` while a button is held is interpolated (≤ 12 px steps) so canvas strokes and
+  manual drags get intermediate events. Separate click actions at the same spot within 500 ms are spaced out so
+  they don't merge into one multi-click.
+- Stuck buttons: released after `DESKHAND_STUCK_BUTTON_MS` without `left_mouse_up`, on lock/unlock, and on
+  `POST /release-all` (manager: call on `desktop_stop` and session end); noted in the next result.
+- `/exec`: `bash -c` as `agent` with the session env (never the daemon key), stdin closed, own process group;
+  returns ~200 ms after the main process exits even if detached children (xclip) hold the pipes; on timeout
+  SIGTERM then SIGKILL to the group. 1 MiB cap per stream.
+- `/files`: done as `agent` via `cat`/`stat` child processes, so permissions are the agent's (root-only files
+  such as the key return `forbidden`) and new files/dirs are owned by `agent`.
+- `/ui-tree`: `/opt/deskhand/uitree.py` (pyatspi) as `agent`; prunes non-showing nodes and invalid boxes (closed
+  menus report −2³¹); top-level windows carry `app`. GTK icon views don't expose items (pcmanfm needs list view).
+- `/quiesce`: `Browser.close` over CDP, `wmctrl -c` every window, SIGTERM/SIGKILL leftover agent processes
+  (not the desktop's own), clear `~/.cache`, `~/Downloads`, `/tmp` (keeping X sockets), `/var/tmp` and Chromium
+  cache dirs. Paths that are or contain a mount point are skipped, so host mounts are never emptied.
+- Logs: JSON lines on stdout (supervisord → `docker logs`), one per action/exec/lock change.
+
+## Shared contract additions (phase 1, additive)
+
+`packages/shared/src/daemon.ts`: `DaemonState.chromiumSandbox?` (`"on"|"off"|null`) and `queueLength?`;
+`CursorResponse` (`{x, y, cursor}`); `POST /release-all` → `ReleaseAllResponse` (`{released: string[]}`);
+`FilePutResponse`; `QuiesceResponse`; `UiNode.app?`; doc comments on the deadline extension, the lock-holder
+actor rule and the CDP URL rewriting (`X-Forwarded-Host/-Prefix/-Proto`).
+
+## Playwright MCP notes (spike)
+
+- `createConnection({ browser: { cdpEndpoint: "http://<daemon>/cdp" } })` works through the daemon proxy (send
+  the Bearer header, or have the manager's own proxy add it); refs from `browser_snapshot` stay valid across calls.
+- Attached to an existing browser, Playwright's "current" tab can be a background tab; clicks then time out
+  waiting for "stable". Call `browser_tabs {action: "select", index}` for the visible tab first.
+- 0.0.83 element tools take `target` (ref or selector), not `ref` — pin the version.
 
 ## Action log (owned by the manager)
 
@@ -96,6 +165,11 @@ human ──dashboard─┘   Fastify, SQLite,     │      Xvfb :0 (agent) · o
 
 - `scripts/dev` runs Node commands in a container (no Node on the host). Dev images are tagged `:dev`.
 - Test containers/resources are labelled `owner=deskhand-dev` and cleaned up by the tests.
+- Desktop image: `docker build -f images/desktop/Dockerfile -t deskhand-desktop:dev .` (repo root context;
+  `images/desktop/Dockerfile.dockerignore` keeps it small). Daemon unit tests:
+  `scripts/dev pnpm --filter @deskhand/daemon test`; desktop e2e: `DEV_DOCKER=1 scripts/dev pnpm --filter
+  @deskhand/daemon test:e2e` (starts the image on a throwaway labelled bridge network, talks to the container
+  IP, writes the desktop's log to `packages/daemon/test-results/e2e-desktop.log`).
 
 ## Computer-use parity (computer_toolset_20260801)
 

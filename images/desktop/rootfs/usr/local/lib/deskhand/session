@@ -1,0 +1,20 @@
+#!/bin/bash
+# Run a command with the desktop session environment (see deskhand-entrypoint).
+# Usage: session [--wait-x] [--wait-dbus] cmd args...
+set -a
+. /run/deskhand/session.env
+. /run/deskhand/screen.env
+set +a
+cd "$HOME" 2>/dev/null || cd /
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --wait-x)
+      for _ in $(seq 1 300); do xdpyinfo -display "$DISPLAY" >/dev/null 2>&1 && break; sleep 0.1; done
+      shift ;;
+    --wait-dbus)
+      for _ in $(seq 1 300); do [ -S "${DBUS_SESSION_BUS_ADDRESS#unix:path=}" ] && break; sleep 0.1; done
+      shift ;;
+    *) break ;;
+  esac
+done
+exec "$@"

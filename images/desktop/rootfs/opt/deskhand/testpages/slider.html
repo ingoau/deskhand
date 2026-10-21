@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Range slider</title><link rel="stylesheet" href="style.css">
+<style>
+  input[type=range] { width: 600px; height: 30px; margin: 30px 0; }
+  .value { font-size: 40px; font-weight: bold; }
+</style></head>
+<body>
+<h1>Range slider</h1>
+<p class="hint">Drag the thumb. The value below follows it.</p>
+<input type="range" id="slider" min="0" max="100" step="1" value="0" aria-label="Test slider">
+<div class="value" id="value">0</div>
+<div class="status" id="status"></div>
+<script src="common.js"></script>
+<script>
+  const s = document.getElementById("slider"), v = document.getElementById("value");
+  const update = () => { v.textContent = s.value; window.deskhand.result = { value: Number(s.value) }; };
+  s.addEventListener("input", () => { update(); deskhandLog("input", s.value); });
+  s.addEventListener("change", () => deskhandLog("change", s.value));
+  /** Screen x of a given value along the track (thumb centre), for tests. */
+  window.deskhandSliderX = (value) => {
+    const r = s.getBoundingClientRect(); const o = window.deskhand.offset;
+    const thumb = 16; // Chromium's default thumb width
+    return Math.round(o[0] + r.left + thumb / 2 + (r.width - thumb) * (value - s.min) / (s.max - s.min));
+  };
+  update();
+</script>
+</body>
+</html>

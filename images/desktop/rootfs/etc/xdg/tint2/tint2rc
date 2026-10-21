@@ -1,0 +1,85 @@
+# deskhand panel: launchers, task list, clock. Bottom edge, 30 px.
+# Backgrounds: 1 = panel, 2 = active task, 3 = inactive task
+rounded = 0
+border_width = 0
+background_color = #1e1f22 100
+border_color = #000000 0
+
+rounded = 3
+border_width = 0
+background_color = #3d4147 100
+border_color = #000000 0
+
+rounded = 3
+border_width = 0
+background_color = #2a2c30 100
+border_color = #000000 0
+
+panel_items = LTSC
+panel_size = 100% 30
+panel_margin = 0 0
+panel_padding = 4 2 4
+panel_background_id = 1
+panel_position = bottom center horizontal
+panel_layer = top
+panel_monitor = all
+wm_menu = 1
+panel_dock = 0
+strut_policy = follow_size
+autohide = 0
+font_shadow = 0
+
+launcher_padding = 2 2 4
+launcher_background_id = 0
+launcher_icon_size = 22
+launcher_icon_theme = Adwaita
+launcher_tooltip = 1
+launcher_item_app = /usr/local/share/applications/chromium.desktop
+launcher_item_app = /usr/share/applications/firefox-esr.desktop
+launcher_item_app = /usr/share/applications/pcmanfm.desktop
+launcher_item_app = /usr/share/applications/org.xfce.mousepad.desktop
+launcher_item_app = /usr/share/applications/featherpad.desktop
+launcher_item_app = /usr/share/applications/org.xfce.ristretto.desktop
+launcher_item_app = /usr/share/applications/debian-xterm.desktop
+
+taskbar_mode = single_desktop
+taskbar_padding = 2 0 4
+taskbar_background_id = 0
+taskbar_active_background_id = 0
+taskbar_name = 0
+taskbar_hide_inactive_tasks = 0
+
+task_text = 1
+task_icon = 1
+task_centered = 0
+task_maximum_size = 220 26
+task_padding = 6 2 4
+task_font = Noto Sans 9
+task_font_color = #d8d8d8 100
+task_active_font_color = #ffffff 100
+task_background_id = 3
+task_active_background_id = 2
+task_urgent_background_id = 2
+task_iconified_background_id = 3
+mouse_left = toggle_iconify
+mouse_middle = none
+mouse_right = close
+mouse_scroll_up = none
+mouse_scroll_down = none
+
+systray_padding = 0 0 4
+systray_background_id = 0
+systray_icon_size = 18
+
+time1_format = %H:%M
+time1_font = Noto Sans Bold 9
+clock_font_color = #d8d8d8 100
+clock_padding = 6 0
+clock_background_id = 0
+clock_tooltip = %A %d %B %Y
+
+tooltip_show_timeout = 0.5
+tooltip_hide_timeout = 0.1
+tooltip_padding = 4 4
+tooltip_background_id = 1
+tooltip_font_color = #ffffff 100

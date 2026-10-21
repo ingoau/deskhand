@@ -1,0 +1,18 @@
+{
+  "DefaultBrowserSettingEnabled": false,
+  "MetricsReportingEnabled": false,
+  "PromotionsEnabled": false,
+  "BrowserSignin": 0,
+  "SyncDisabled": true,
+  "TranslateEnabled": false,
+  "PasswordManagerEnabled": false,
+  "AutofillCreditCardEnabled": false,
+  "BackgroundModeEnabled": false,
+  "HardwareAccelerationModeEnabled": false,
+  "ShowHomeButton": false,
+  "PrivacySandboxPromptEnabled": false,
+  "PrivacySandboxAdTopicsEnabled": false,
+  "SearchSuggestEnabled": false,
+  "DownloadDirectory": "/home/agent/Downloads",
+  "PromptForDownloadLocation": false
+}
