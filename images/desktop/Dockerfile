@@ -75,7 +75,11 @@ RUN chmod 0755 /usr/local/bin/deskhand-* /usr/local/lib/deskhand/* \
  && update-alternatives --install /usr/bin/x-www-browser x-www-browser /usr/local/bin/deskhand-chromium 300 \
  && update-desktop-database /usr/local/share/applications \
  && /usr/local/lib/deskhand/gen-versions "${DESKHAND_VERSION}" > /etc/deskhand-versions.json \
- && cat /etc/deskhand-versions.json
+ && cat /etc/deskhand-versions.json \
+ && dpkg-query -W -f='${Package}\t${Version}\t${db:Status-Status}\n' | awk -F'\t' '$3 == "installed" { print $1 "\t" $2 }' | sort > /etc/deskhand-base-packages.txt
+# /etc/deskhand-base-packages.txt: every installed Debian package (name<TAB>version), so the manager can
+# list the packages a template added compared with this base image.
+LABEL deskhand.version="${DESKHAND_VERSION}"
 
 EXPOSE 7000
 STOPSIGNAL SIGTERM

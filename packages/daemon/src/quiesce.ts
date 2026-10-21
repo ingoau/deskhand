@@ -66,6 +66,26 @@ export function clearDir(dir: string, mounts: string[], keep: Set<string> = new 
   return { removed, skipped };
 }
 
+/** Regular files named `core` or `core.<pid>` directly in `dir` (not mount points). */
+export function coreDumps(dir: string, mounts: string[]): string[] {
+  let names: string[] = [];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return [];
+  }
+  return names
+    .filter((n) => /^core(\.\d+)?$/.test(n))
+    .map((n) => join(dir, n))
+    .filter((p) => {
+      try {
+        return lstatSync(p).isFile() && !touchesMount(p, mounts);
+      } catch {
+        return false;
+      }
+    });
+}
+
 export interface QuiesceResult {
   ok: true;
   chromiumClosed: boolean;
@@ -145,6 +165,15 @@ export async function quiesce(): Promise<QuiesceResult> {
     const r = clearDir(dir, mounts, keep);
     if (r.removed) cleared.push(dir);
     for (const s of r.skipped) notes.push(`Kept ${s} (mount point or not removable).`);
+  }
+  // Core dumps of crashed apps (they land in the home directory, can be large, and may hold page memory).
+  for (const f of coreDumps(home, mounts)) {
+    try {
+      rmSync(f, { force: true });
+      cleared.push(f);
+    } catch {
+      /* ignore */
+    }
   }
   log.info("quiesced", { chromiumClosed, closedWindows, killed: killed.length, cleared: cleared.length });
   return { ok: true, chromiumClosed, closedWindows, killed, cleared, notes };

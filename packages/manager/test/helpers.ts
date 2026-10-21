@@ -17,7 +17,11 @@ const usedPorts = new Set<number>();
  * Ports are not reused within a test file, so a client's pooled keep-alive socket to a closed
  * manager is never mistaken for a connection to a new one.
  */
-export async function freePort(lo = 17200, hi = 17249): Promise<number> {
+const envPorts = process.env.DESKHAND_TEST_PORTS?.split("-").map(Number);
+const [PORT_LO, PORT_HI] = envPorts && envPorts.length === 2 ? envPorts : [17200, 17249];
+
+/** DESKHAND_TEST_PORTS=lo-hi overrides the manager range (and DESKHAND_FAKE_PORTS the fake daemons'). */
+export async function freePort(lo = PORT_LO!, hi = PORT_HI!): Promise<number> {
   const span = hi - lo + 1;
   const start = Math.floor(Math.random() * span);
   for (let i = 0; i < span; i++) {

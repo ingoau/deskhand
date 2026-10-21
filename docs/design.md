@@ -153,6 +153,64 @@ actor rule and the CDP URL rewriting (`X-Forwarded-Host/-Prefix/-Proto`).
   `deskhand-template:<name>-v<N>` produced by quiesce + `docker commit` (bind mounts are never in a commit).
 - Records (description, manifest, feedback, versions, current-version pointer, default pointer) live in SQLite.
 
+### Templates as built (phase 4)
+
+Code: `packages/manager/src/templates.ts` (records, rules), `template-ops.ts` (save pipeline, rebuild),
+`manifest.ts` (probe + classification); MCP tools in `packages/mcp/src/tools.ts`; CLI `deskhand template …`.
+
+- **Save pipeline** (template_save and the dashboard's save-as-template): validate name and description rule →
+  start the desktop if stopped → daemon `/quiesce` (Chromium `Browser.close` over CDP, so cookies are flushed;
+  other windows closed; caches, Downloads, /tmp cleared; mount points skipped) → manifest probe → `docker commit`
+  → prune. Saves of one template are serialised. The repository is `DESKHAND_TEMPLATE_REPO`
+  (default `deskhand-template`).
+- **Description rule:** a new template needs `description` (summary + use_when). A new version must restate it
+  or pass `confirm_description: true` to keep the previous one; otherwise the error quotes the current description.
+  An omitted `recipe` keeps the previous version's; `""` removes it. `PUT /api/templates/:name/recipe` edits the
+  current version's recipe in place (metadata only).
+- **Manifest** (per version): a Python probe (stdlib sqlite3; Python is already in the image) runs in the desktop as
+  the agent user via `docker exec` (not the daemon, so a user's takeover lock doesn't block a dashboard save). It
+  copies each cookie DB (Chromium `Default|Profile */(Network/)Cookies`, Firefox `cookies.sqlite`) to a temp dir
+  and selects only host, name, expiry and flags — **cookie values are never read**. Logged-in sites = registrable
+  domains with an unexpired persistent cookie that is not a known tracker/preference cookie and has a login-like
+  name or is HttpOnly. Extensions from the Chromium profile's `Extensions/` and Firefox `extensions.json`.
+  Packages = installed dpkg packages not in `/etc/deskhand-base-packages.txt` (written at image build).
+- **Base version:** `<deskhand.version label>+<image created, UTC>` of `DESKHAND_DESKTOP_IMAGE`, plus its image id.
+  Each version records the base it was built on (a desktop started from template X vN inherits X vN's base).
+  On start the manager compares the desktop image id with the one recorded last time.
+- **Rebuild** (automatic for recipe-backed templates when the base changed, `DESKHAND_TEMPLATE_AUTO_REBUILD`;
+  manual via `POST /api/templates/:name/rebuild` / `deskhand template rebuild <name>`), one at a time:
+  1. a desktop from the new base (visible in the dashboard as "rebuild template <name>", removed afterwards);
+  2. the recipe runs with `bash -e` **as the agent user** with the session env (like desktop_exec), or **as root**
+     when one of its first five lines is `# deskhand: run-as=root`; time limit `DESKHAND_RECIPE_TIMEOUT` (20m);
+  3. quiesce; then the snapshot's non-scriptable state is copied from the old version's image over the same paths
+     (`DESKHAND_TEMPLATE_CARRY`, default `~/.config/chromium`, `~/.mozilla`, `~/.config/mozilla`, `~/.local/share/keyrings`, `~/.pki`:
+     browser profiles with cookies, local storage, sessions, saved site data and browser-installed extensions,
+     the keyring and the NSS cert store). Paths the old image lacks are left as the recipe made them;
+  4. manifest, commit as the next version (same description and recipe, `rebuiltFrom`, saved by
+     "deskhand (base update)"). A failure records `rebuild.status = failed` with the recipe's output tail, keeps the
+     old version current, flags `outdatedBase`, and is not retried automatically on that base.
+  Snapshot-only templates are never rebuilt; they show `outdatedBase` until saved again on the new base.
+- **Feedback and stale:** feedback rows carry version, token name and session label. "Last confirmed" = latest `ok`
+  for the current version. Stale = latest feedback on the current version is a problem, or neither an `ok` nor the
+  version itself is newer than `DESKHAND_TEMPLATE_STALE_AFTER` (14d). `base` is never stale.
+  `recentlyChangedByAgent` = a version saved through MCP in the last 24 h (`changedByAgentAt`).
+- **Cleanup:** after each save, on desktop removal and at start: keep the newest `DESKHAND_TEMPLATE_VERSIONS`, the
+  current one and any version a desktop still uses; an image Docker refuses to remove (still used by a container)
+  stays recorded and is retried later.
+- **Discovery:** desktop_start's description lists every template (name, summary, use_when, logged-in sites,
+  not_for, stale/outdated flags) plus the reuse rule; any template change (save, feedback, rollback, recipe edit,
+  rebuild, base change) sends `notifications/tools/list_changed`. desktop_start from a template with logins says
+  the session is active and that apps start closed.
+- **Known caveat:** `docker commit` includes `/run/deskhand/key` of the saving desktop (root-only, 0600, replaced at
+  every start), so a template image holds a dead per-desktop key. Harmless, but don't publish template images.
+
+**Shared contract additions (phase 4, additive/optional):** `TemplateVersion.savedFrom|rebuiltFrom|manifestNotes|
+recipe|changes`; `TemplateChanges`/`TemplateListChange`; `TemplateFeedback.session`; `TemplateSummary.staleReason|
+changedByAgentAt|hasRecipe|baseVersion|currentBaseVersion|extensions|rebuild`; `SaveTemplateRequest.description` now
+optional + `confirm_description`; `RollbackRequest.version` optional; `UpdateRecipeRequest`, `RebuildResponse`.
+New routes: `PUT /api/templates/:name/recipe`, `POST /api/templates/:name/rebuild`, `GET /api/templates/:name/diff`.
+Runtime interface: `imageInfo`, `exec`, `writeFile`, `copyFromImage`; `removeImage` returns false when in use.
+
 ## Dashboard
 
 - React + Vite + Tailwind + shadcn/ui-style components (Radix), TanStack Query polling, noVNC (`@novnc/novnc`)
@@ -170,6 +228,10 @@ actor rule and the CDP URL rewriting (`X-Forwarded-Host/-Prefix/-Proto`).
   `scripts/dev pnpm --filter @deskhand/daemon test`; desktop e2e: `DEV_DOCKER=1 scripts/dev pnpm --filter
   @deskhand/daemon test:e2e` (starts the image on a throwaway labelled bridge network, talks to the container
   IP, writes the desktop's log to `packages/daemon/test-results/e2e-desktop.log`).
+- Template e2e on the real image: `DEV_DOCKER=1 scripts/dev env DESKHAND_E2E_IMAGE=deskhand-desktop:dev pnpm
+  --filter @deskhand/manager test:e2e` (~1 min; runs the test shop from `suite/fixtures/login-site`, logs in with
+  real Chromium over CDP, builds a throwaway "new base" image). Test port ranges can be moved with
+  `DESKHAND_TEST_PORTS=lo-hi` / `DESKHAND_FAKE_PORTS=lo-hi` on a shared host.
 
 ## Computer-use parity (computer_toolset_20260801)
 

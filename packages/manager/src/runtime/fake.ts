@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { DeskhandError, LABELS } from "@deskhand/shared";
 import { FakeDaemon } from "../fake-daemon/fake-daemon.js";
-import type { ContainerInfo, ContainerStats, DesktopSpec, HostInfo, PathResolution, Runtime } from "./types.js";
+import type { ContainerInfo, ContainerStats, DesktopSpec, ExecOptions, ExecResult, HostInfo, ImageInfo, PathResolution, Runtime } from "./types.js";
 import { randomId } from "../util.js";
 
 interface FakeContainer {
@@ -214,6 +214,46 @@ export class FakeRuntime implements Runtime {
 
   async removeImage(image: string) {
     this.images.delete(image);
+    return true;
+  }
+
+  /** Image ids by name (tests change one to simulate a new base image). */
+  readonly imageIds = new Map<string, string>();
+  /** Calls to exec / writeFile / copyFromImage (tests). */
+  readonly execCalls: Array<{ containerId: string; cmd: string[]; user?: string }> = [];
+  readonly writes: Array<{ containerId: string; path: string; data: Buffer }> = [];
+  readonly copies: Array<{ image: string; paths: string[]; containerId: string }> = [];
+  /** Optional exec behaviour (tests): default exit 0 with no output. */
+  execHandler: ((containerId: string, cmd: string[], opts: ExecOptions) => ExecResult | Promise<ExecResult>) | null = null;
+
+  async imageInfo(image: string): Promise<ImageInfo | null> {
+    this.check();
+    if (!this.images.has(image)) return null;
+    return { id: this.imageIds.get(image) ?? `sha256:fake-${image}`, created: "2026-10-22T00:00:00.000Z", labels: {} };
+  }
+
+  async exec(containerId: string, cmd: string[], opts: ExecOptions): Promise<ExecResult> {
+    this.check();
+    if (!this.containers.get(containerId)?.running) throw new DeskhandError("desktop_stopped");
+    this.execCalls.push({ containerId, cmd, user: opts.user });
+    if (cmd.some((c) => c.startsWith("# deskhand-manifest"))) {
+      const m = this.containers.get(containerId)?.daemon?.behavior.manifest ?? { cookies: [], extensions: [], packages: [], baseList: true, notes: [] };
+      return { exitCode: 0, stdout: JSON.stringify(m), stderr: "", timedOut: false };
+    }
+    return this.execHandler ? this.execHandler(containerId, cmd, opts) : { exitCode: 0, stdout: "", stderr: "", timedOut: false };
+  }
+
+  async writeFile(containerId: string, filePath: string, data: Buffer) {
+    this.check();
+    this.writes.push({ containerId, path: filePath, data });
+  }
+
+  async copyFromImage(image: string, paths: string[], containerId: string, beforeEach?: (path: string) => Promise<void>) {
+    this.check();
+    if (!this.images.has(image)) throw new DeskhandError("internal", `no such image ${image}`);
+    for (const p of paths) if (beforeEach) await beforeEach(p);
+    this.copies.push({ image, paths, containerId });
+    return paths;
   }
 
   async resolveHostPaths(paths: string[]): Promise<PathResolution[]> {

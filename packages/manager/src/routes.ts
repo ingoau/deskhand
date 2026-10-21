@@ -11,6 +11,7 @@ import {
   LoginRequest,
   RollbackRequest,
   SaveTemplateRequest,
+  UpdateRecipeRequest,
   SetPersistentRequest,
   SetTitleRequest,
   type Me,
@@ -24,7 +25,7 @@ import type { DesktopService } from "./desktops.js";
 import type { TemplateService } from "./templates.js";
 import type { ActionLog } from "./actionlog.js";
 import type { FileService, ManagerMcpBackend } from "./mcp-backend.js";
-import { saveDesktopAsTemplate } from "./mcp-backend.js";
+import { saveDesktopAsTemplate, type TemplateRebuilder } from "./template-ops.js";
 import type { Runtime } from "./runtime/types.js";
 import type { FakeRuntime } from "./runtime/fake.js";
 import { toPng, toThumbnail } from "./images.js";
@@ -35,6 +36,7 @@ export interface RouteContext {
   auth: AuthService;
   desktops: DesktopService;
   templates: TemplateService;
+  rebuilder: TemplateRebuilder;
   actionLog: ActionLog;
   files: FileService;
   mcp: McpService;
@@ -383,8 +385,8 @@ export async function registerRoutes(app: FastifyInstance, ctx: RouteContext): P
   app.post(`${D}/save-as-template`, async (req) => {
     const d = desktops.require(did(req));
     const body = SaveTemplateRequest.parse(req.body ?? {});
-    const t = await saveDesktopAsTemplate(desktops, templates, d, body, actor(req), false, ctx.logger);
-    return { template: t, version: t.latestVersion };
+    const r = await saveDesktopAsTemplate({ cfg, desktops, templates, runtime: ctx.runtime, log: ctx.logger }, d, body, actor(req), false, "dashboard");
+    return { template: r.template, version: r.version, notes: [...r.notes, ...r.manifest.notes] };
   });
 
   app.get("/api/templates", async () => ({ templates: templates.list() }));
@@ -403,6 +405,22 @@ export async function registerRoutes(app: FastifyInstance, ctx: RouteContext): P
     const name = (req.params as { name: string }).name;
     templates.setDefault(name);
     return templates.info(name);
+  });
+  app.put("/api/templates/:name/recipe", async (req) => {
+    const { recipe } = UpdateRecipeRequest.parse(req.body ?? {});
+    return templates.setRecipe((req.params as { name: string }).name, recipe);
+  });
+  app.post("/api/templates/:name/rebuild", async (req) => {
+    const r = await ctx.rebuilder.rebuild((req.params as { name: string }).name, actor(req));
+    return { template: r.template, version: r.version };
+  });
+  app.get("/api/templates/:name/diff", async (req) => {
+    const q = req.query as { from?: string; to?: string };
+    const num = (v: string | undefined) => (v === undefined || v === "" ? undefined : Number(v.replace(/^v/, "")));
+    const from = num(q.from);
+    const to = num(q.to);
+    if ((from !== undefined && !Number.isInteger(from)) || (to !== undefined && !Number.isInteger(to))) throw new DeskhandError("invalid_argument", "from and to are version numbers.");
+    return templates.diff((req.params as { name: string }).name, from, to);
   });
 
   // ---------------------------------------------------------------- live view (VNC websocket proxy)
