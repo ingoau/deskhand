@@ -121,7 +121,8 @@ function getDesktop(state: MockState, id: string): MockDesktop {
 }
 
 function requireRunning(d: MockDesktop) {
-  if (d.status !== "running") throw new HttpError("invalid_argument", `Desktop is ${d.status}; start it first.`);
+  // The manager answers 409 desktop_stopped for anything that needs a running desktop.
+  if (d.status !== "running") throw new HttpError("desktop_stopped", `Desktop ${d.id} is ${d.status}; start it first.`);
 }
 
 function dashboardLog(state: MockState, d: MockDesktop, tool: string, summary: string, args: unknown = {}, hasScreenshot = false) {
@@ -301,6 +302,13 @@ route("DELETE", "api/desktops/:id/lock", async ({ state, params, json }) => {
   d.lastHandback = { note: clean, at: iso(), generation: d.generation };
   dashboardLog(state, d, "handback", clean ? `handback("${clean}")` : "handback", { note: clean }, true);
   return { generation: d.generation, lock: null };
+});
+
+route("DELETE", "api/desktops/:id/attention", async ({ state, params, json }) => {
+  const d = getDesktop(state, params[0]!);
+  await json<{ note?: string | null }>();
+  d.attention = null;
+  return publicDesktop(d);
 });
 
 route("POST", "api/desktops/:id/save-as-template", async ({ state, params, json }) => {
@@ -498,7 +506,10 @@ route("POST", "auth/login", async ({ state, json, res, base }) => {
   send(res, 204, undefined, { "Set-Cookie": sessionCookie(base, sid, 30 * 24 * 3600) });
 });
 
-route("GET", "auth/login", ({ state, res, base }) => {
+route("GET", "auth/login", ({ state, res, base, query }) => {
+  // Like the manager: an expired/used code lands on `${base}?login=expired` (code "expired" simulates one).
+  const code = query.get("code");
+  if (!code || code === "expired") return send(res, 303, undefined, { Location: `${base}?login=${code ? "expired" : "missing"}` });
   const sid = randomId(16);
   state.sessions.add(sid);
   send(res, 302, undefined, { "Set-Cookie": sessionCookie(base, sid, 30 * 24 * 3600), Location: base });

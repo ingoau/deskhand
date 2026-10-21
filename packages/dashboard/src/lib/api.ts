@@ -127,6 +127,9 @@ export const api = {
   takeOver: (id: string) => request<LockResult>(`api/desktops/${enc(id)}/lock`, { method: "POST", body: {} }),
   handBack: (id: string, note: string | null) =>
     request<LockResult>(`api/desktops/${enc(id)}/lock`, { method: "DELETE", body: { note } }),
+  /** Dismiss a request_human flag without taking over; the agent's request_human returns "dismissed" with the note. */
+  dismissAttention: (id: string, note: string | null) =>
+    request<DesktopSummary>(`api/desktops/${enc(id)}/attention`, { method: "DELETE", body: { note } }),
   saveAsTemplate: (id: string, body: SaveTemplateRequest) =>
     request<SaveTemplateResult>(`api/desktops/${enc(id)}/save-as-template`, { method: "POST", body }),
   uploadFile: (id: string, file: File, path: string) => {

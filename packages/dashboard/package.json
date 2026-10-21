@@ -10,6 +10,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "e2e": "playwright test",
+    "e2e:real": "E2E_RUNTIME=fake playwright test -c playwright.real.config.ts",
+    "e2e:docker": "E2E_RUNTIME=docker playwright test -c playwright.real.config.ts",
     "screenshots": "SCREENSHOTS=1 playwright test screenshots"
   },
   "dependencies": {
@@ -26,6 +28,7 @@
   },
   "devDependencies": {
     "@deskhand/shared": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@playwright/test": "1.64.1",
     "@tailwindcss/vite": "^4.3.3",
     "@types/react": "^19.3.0",

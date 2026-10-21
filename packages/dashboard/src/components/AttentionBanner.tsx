@@ -1,7 +1,7 @@
 import { Link } from "react-router";
 import type { DesktopSummary } from "@deskhand/shared";
 import { displayTitle } from "../lib/desktop";
-import { since } from "../lib/format";
+import { since, until } from "../lib/format";
 import { useNow } from "../lib/now";
 
 /** `● supplier-portal-sign-up needs you  “CAPTCHA on the sign-in page” · 2m  take over →` */
@@ -9,6 +9,8 @@ export function AttentionBanner({ desktop: d }: { desktop: DesktopSummary }) {
   const now = useNow();
   const a = d.attention!;
   const to = `/desktops/${d.id}`;
+  const left = until(a.timeoutAt, now);
+  const timeout = left ? ` · times out in ${left}` : a.timeoutAt ? " · agent stopped waiting" : "";
   return (
     <>
       {/* desktop: one line */}
@@ -19,6 +21,7 @@ export function AttentionBanner({ desktop: d }: { desktop: DesktopSummary }) {
         </Link>
         <span className="ml-1 truncate text-muted">
           “{a.reason}” · {since(a.since, now)}
+          <span className="text-faint" data-testid="attention-timeout">{timeout}</span>
         </span>
         <Link to={to} state={{ takeover: true }} className="ml-1 shrink-0 font-medium text-amber hover:underline underline-offset-4">
           take over →
@@ -32,6 +35,7 @@ export function AttentionBanner({ desktop: d }: { desktop: DesktopSummary }) {
         </div>
         <div className="mt-1 text-dim">
           “{a.reason}” · {since(a.since, now)}
+          <span className="text-muted">{timeout}</span>
         </div>
         <Link to={to} state={{ takeover: true }} className="mt-1 inline-block py-1 font-medium text-amber">
           take over →
