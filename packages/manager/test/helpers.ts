@@ -53,11 +53,12 @@ export async function startManager(
   opts: { env?: Record<string, string>; runtime?: Runtime; dataDir?: string; fake?: ConstructorParameters<typeof FakeRuntime>[0] } = {},
 ): Promise<TestManager> {
   const dataDir = opts.dataDir ?? tmpDir();
-  const runtime = opts.runtime ?? new FakeRuntime({ lockWaitMs: 1000, ...opts.fake });
+  const docker = opts.env?.DESKHAND_RUNTIME === "docker";
+  const runtime = opts.runtime ?? (docker ? undefined : new FakeRuntime({ lockWaitMs: 1000, ...opts.fake }));
   let m: Manager | undefined;
   let port = 0;
   let cfg: ReturnType<typeof parseConfig> | undefined;
-  const env0 = { ...FAST_ENV, DESKHAND_RUNTIME: "fake", DESKHAND_DATA_DIR: dataDir, ...opts.env };
+  const env0: Record<string, string> = { ...FAST_ENV, DESKHAND_RUNTIME: "fake", DESKHAND_DATA_DIR: dataDir, ...opts.env };
   for (let attempt = 0; attempt < 20 && !m; attempt++) {
     // Test files run in parallel: another one may grab the port between the check and the bind.
     port = await freePort();
@@ -80,7 +81,7 @@ export async function startManager(
     url: `http://127.0.0.1:${port}${base}`,
     base,
     token,
-    runtime,
+    runtime: manager.runtime,
     dataDir,
     async close(o = {}) {
       await manager.close();
