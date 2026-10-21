@@ -243,6 +243,16 @@ route("POST", "api/desktops", async ({ state, json, res }) => {
     cpuPercent: null,
     memoryBytes: null,
     diskBytes: null,
+    hardware: {
+      memoryBytes:
+        typeof body.memory === "number"
+          ? body.memory
+          : body.memory
+            ? Math.round(parseFloat(body.memory) * 1024 ** ({ k: 1, m: 2, g: 3, t: 4 }[body.memory.trim().slice(-1).toLowerCase()] ?? 0))
+            : (t.hardware?.memoryBytes ?? 2 * 1024 ** 3),
+      cpus: body.cpus ?? t.hardware?.cpus ?? 1.5,
+      kvm: body.kvm ?? t.hardware?.kvm ?? false,
+    },
     scene: look.scene,
     accent: look.accent,
     readyAt: now + 4000,

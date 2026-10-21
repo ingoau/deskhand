@@ -12,16 +12,19 @@ import {
   LABELS,
   type Attention,
   type DaemonState,
+  type DesktopHardware,
   type DesktopStatus,
   type DesktopSummary,
   type LastAction,
   type Mount,
+  type TemplateHardware,
 } from "@deskhand/shared";
 import type { Config } from "./config.js";
 import type { DB } from "./db.js";
 import type { ContainerInfo, Runtime } from "./runtime/types.js";
 import type { MountPolicy, ResolvedMount } from "./mounts.js";
 import type { ActionLog } from "./actionlog.js";
+import { formatMemory, type HardwareService } from "./hardware.js";
 import { formatDuration, KeyedMutex, nowIso, randomId, secret, sleep } from "./util.js";
 
 export type StopReason = "idle" | "user" | "agent" | "exited" | "unhealthy" | "manager";
@@ -57,6 +60,8 @@ export interface Desktop {
   attention: Attention | null;
   lastAction: LastAction | null;
   error: string | null;
+  /** Memory/CPU caps and KVM (phase 6). Kept across restarts and recreations. */
+  hardware: DesktopHardware;
 }
 
 interface Live {
@@ -76,6 +81,8 @@ interface Live {
 export interface TemplateResolver {
   resolve(name?: string): { name: string; version: number; image: string };
   resolveVersion(name: string, version: number): { name: string; version: number; image: string } | null;
+  /** Hardware recorded with a template version (phase 6); null when none. */
+  hardwareOf?(name: string, version: number): TemplateHardware | null;
 }
 
 export interface CreateOptions {
@@ -86,6 +93,10 @@ export interface CreateOptions {
   mounts?: Mount[];
   persistent?: boolean;
   screen?: { width: number; height: number };
+  /** Phase 6: memory cap ("8g" or bytes), CPU cap and KVM. Omitted = template's recorded hardware, else defaults. */
+  memory?: string | number;
+  cpus?: number;
+  kvm?: boolean;
   actor: string | null;
 }
 
@@ -118,6 +129,8 @@ function rowToDesktop(r: Record<string, unknown>): Desktop {
     attention: r.attention ? (JSON.parse(r.attention as string) as Attention) : null,
     lastAction: r.last_action ? (JSON.parse(r.last_action as string) as LastAction) : null,
     error: (r.error as string) ?? null,
+    // 0 = recorded before phase 6; filled with the configured defaults by the service.
+    hardware: { memoryBytes: (r.memory_bytes as number) ?? 0, cpus: (r.cpus as number) ?? 0, kvm: r.kvm === 1 },
   };
 }
 
@@ -138,11 +151,14 @@ export class DesktopService extends EventEmitter {
     private readonly templates: TemplateResolver,
     private readonly actionLog: ActionLog,
     private readonly log: Logger,
+    readonly hardware: HardwareService,
   ) {
     super();
     this.setMaxListeners(1000);
     for (const r of this.db.prepare("SELECT * FROM desktops").all() as Array<Record<string, unknown>>) {
       const d = rowToDesktop(r);
+      if (!d.hardware.memoryBytes) d.hardware.memoryBytes = cfg.desktopMemoryBytes;
+      if (!d.hardware.cpus) d.hardware.cpus = cfg.desktopCpus;
       this.desktops.set(d.id, d);
     }
   }
@@ -154,6 +170,7 @@ export class DesktopService extends EventEmitter {
   setHostInfo(memoryBudget: number, cpus: number) {
     this.memoryBudget = memoryBudget;
     this.hostCpus = cpus;
+    this.hardware.setHostCpus(cpus);
   }
 
   private liveOf(id: string): Live {
@@ -171,20 +188,25 @@ export class DesktopService extends EventEmitter {
       .prepare(
         `INSERT INTO desktops (id, name, container_id, session_id, session_label, session_index, title, template, template_version, image, persistent,
            mounts, screen_w, screen_h, daemon_key, status, stop_reason, created_at, started_at, stopped_at, last_activity_at, removed_at, remove_reason,
-           attention, last_action, error)
+           attention, last_action, error, memory_bytes, cpus, kvm)
          VALUES (@id, @name, @containerId, @sessionId, @sessionLabel, @sessionIndex, @title, @template, @templateVersion, @image, @persistent,
            @mounts, @w, @h, @daemonKey, @status, @stopReason, @createdAt, @startedAt, @stoppedAt, @lastActivityAt, @removedAt, @removeReason,
-           @attention, @lastAction, @error)
+           @attention, @lastAction, @error, @memoryBytes, @cpus, @kvm)
          ON CONFLICT(id) DO UPDATE SET name=excluded.name, container_id=excluded.container_id, session_id=excluded.session_id,
            session_label=excluded.session_label, session_index=excluded.session_index, title=excluded.title, template=excluded.template,
            template_version=excluded.template_version, image=excluded.image, persistent=excluded.persistent, mounts=excluded.mounts,
            screen_w=excluded.screen_w, screen_h=excluded.screen_h, daemon_key=excluded.daemon_key, status=excluded.status,
            stop_reason=excluded.stop_reason, created_at=excluded.created_at, started_at=excluded.started_at, stopped_at=excluded.stopped_at,
            last_activity_at=excluded.last_activity_at, removed_at=excluded.removed_at, remove_reason=excluded.remove_reason,
-           attention=excluded.attention, last_action=excluded.last_action, error=excluded.error`,
+           attention=excluded.attention, last_action=excluded.last_action, error=excluded.error,
+           memory_bytes=excluded.memory_bytes, cpus=excluded.cpus, kvm=excluded.kvm`,
       )
       .run({
         ...d,
+        hardware: undefined,
+        memoryBytes: d.hardware.memoryBytes,
+        cpus: d.hardware.cpus,
+        kvm: d.hardware.kvm ? 1 : 0,
         persistent: d.persistent ? 1 : 0,
         mounts: JSON.stringify(d.mounts),
         w: d.screen.width,
@@ -280,6 +302,7 @@ export class DesktopService extends EventEmitter {
       attention: null,
       lastAction: null,
       error: null,
+      hardware: { memoryBytes: c.memoryBytes ?? this.cfg.desktopMemoryBytes, cpus: c.cpus ?? this.cfg.desktopCpus, kvm: !!c.kvm },
     };
     this.save(d);
     return d;
@@ -373,6 +396,7 @@ export class DesktopService extends EventEmitter {
       cpuPercent: running ? (l?.cpuPercent ?? null) : null,
       memoryBytes: running ? (l?.memoryBytes ?? null) : null,
       diskBytes: l?.diskBytes ?? null,
+      hardware: { ...d.hardware },
     };
   }
 
@@ -408,28 +432,32 @@ export class DesktopService extends EventEmitter {
 
   // ---------------------------------------------------------------- admission
 
-  private admissionError(): DeskhandError | null {
-    const active = this.list().filter((d) => ACTIVE.includes(d.status)).length;
+  /** Admission for one more desktop with `memoryBytes` (default: the configured default): desktop limit and memory budget. */
+  private admissionError(memoryBytes = this.cfg.desktopMemoryBytes): DeskhandError | null {
+    const activeDesktops = this.list().filter((d) => ACTIVE.includes(d.status));
+    const active = activeDesktops.length;
     if (active + 1 > this.cfg.maxDesktops) {
       return new DeskhandError("limit_reached", `Desktop limit reached (${this.cfg.maxDesktops}). Stop one with \`desktop_stop\` or wait.`, {
         running: active,
         max: this.cfg.maxDesktops,
       });
     }
-    if (this.memoryBudget > 0 && (active + 1) * this.cfg.desktopMemoryBytes > this.memoryBudget) {
-      const gb = (n: number) => `${Math.round((n / 1024 ** 3) * 10) / 10} GB`;
+    // Budget by each desktop's own memory cap (per-desktop memory, phase 6).
+    const reserved = activeDesktops.reduce((n, d) => n + d.hardware.memoryBytes, 0);
+    if (this.memoryBudget > 0 && reserved + memoryBytes > this.memoryBudget) {
+      const free = Math.max(0, this.memoryBudget - reserved);
       return new DeskhandError(
         "limit_reached",
-        `Desktop limit reached: the memory budget (${gb(this.memoryBudget)}) has no room for another ${gb(this.cfg.desktopMemoryBytes)} desktop. Stop one with \`desktop_stop\` or wait.`,
-        { running: active, memoryBudgetBytes: this.memoryBudget },
+        `Desktop limit reached: the memory budget (${formatMemory(this.memoryBudget)}, ${formatMemory(free)} free) has no room for another ${formatMemory(memoryBytes)} desktop. Stop one with \`desktop_stop\`, wait, or ask for less memory.`,
+        { running: active, memoryBudgetBytes: this.memoryBudget, memoryFreeBytes: free, memoryBytes },
       );
     }
     return null;
   }
 
   /** Pure check used by tests and the API. */
-  checkAdmission(): void {
-    const e = this.admissionError();
+  checkAdmission(memoryBytes?: number): void {
+    const e = this.admissionError(memoryBytes);
     if (e) throw e;
   }
 
@@ -439,11 +467,16 @@ export class DesktopService extends EventEmitter {
     const tpl = reuse ? (this.templates.resolveVersion(reuse.template, reuse.templateVersion) ?? this.templates.resolve(reuse.template)) : this.templates.resolve(opts.template);
     const mounts: ResolvedMount[] = await this.policy.checkMounts(opts.mounts ?? []);
     const screen = opts.screen ?? this.cfg.screen;
+    const hw = await this.hardware.resolve(
+      { memory: opts.memory, cpus: opts.cpus, kvm: opts.kvm },
+      { name: tpl.name, hardware: this.templates.hardwareOf?.(tpl.name, tpl.version) ?? null },
+      reuse?.hardware,
+    );
     await this.runtime.ping();
     await this.runtime.ensureImage(tpl.image);
 
     const d = await this.mutex.run("admission", async () => {
-      this.checkAdmission();
+      this.checkAdmission(hw.memoryBytes);
       const id = reuse?.id ?? this.newId();
       const sessionIndex = reuse?.sessionIndex ?? (opts.sessionId ? Math.max(-1, ...this.forSession(opts.sessionId).map((x) => x.sessionIndex)) + 1 : 0);
       const now = nowIso();
@@ -473,11 +506,13 @@ export class DesktopService extends EventEmitter {
         attention: null,
         lastAction: null,
         error: null,
+        hardware: { memoryBytes: hw.memoryBytes, cpus: hw.cpus, kvm: hw.kvm },
       };
       this.save(desk);
       return desk;
     });
     this.live.delete(d.id);
+    if (hw.notes.length) this.liveOf(d.id).agentNotes.push(...hw.notes);
     try {
       d.containerId = await this.runtime.createDesktop({
         id: d.id,
@@ -485,8 +520,9 @@ export class DesktopService extends EventEmitter {
         image: d.image,
         env: this.envFor(d),
         labels: this.labelsFor(d),
-        memoryBytes: this.cfg.desktopMemoryBytes,
-        cpus: this.cfg.desktopCpus,
+        memoryBytes: d.hardware.memoryBytes,
+        cpus: d.hardware.cpus,
+        kvm: d.hardware.kvm,
         binds: d.mounts.map((m) => ({ source: m.source, target: m.path, write: !!m.write })),
       });
       this.save(d);
@@ -598,7 +634,7 @@ export class DesktopService extends EventEmitter {
         throw new DeskhandError("desktop_not_found", "That desktop's container is gone. Call `desktop_start` to create a new one.");
       }
       await this.mutex.run("admission", async () => {
-        this.checkAdmission();
+        this.checkAdmission(d.hardware.memoryBytes);
         d.status = "starting";
         this.save(d);
       });

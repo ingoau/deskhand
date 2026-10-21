@@ -25,6 +25,7 @@ export function toRef(d: Desktop): DesktopRef {
     sessionIndex: d.sessionIndex,
     screen: d.screen,
     mounts: d.mounts.map((m) => ({ path: m.path, ...(m.write ? { write: true } : {}) })),
+    hardware: { ...d.hardware },
   };
 }
 
@@ -158,8 +159,15 @@ export class ManagerMcpBackend implements McpBackend {
       name: opts.name,
       mounts: opts.mounts,
       persistent: opts.persistent,
+      memory: opts.memory,
+      cpus: opts.cpus,
+      kvm: opts.kvm,
       actor: session.principal.name,
     });
+  }
+
+  hardware() {
+    return this.desktops.hardware.info();
   }
 
   async startDesktop(session: SessionInfo, opts: StartOptions): Promise<ResolvedDesktop> {
@@ -170,7 +178,8 @@ export class ManagerMcpBackend implements McpBackend {
       if (match) {
         this.desktops.attach(match.id, session.id, sessionLabel(session));
         if (opts.persistent && !match.persistent) this.desktops.setPersistent(match.id, true);
-        return this.resolved(match, [`Reattached existing desktop ${match.id} ("${opts.name}"); mounts and template are the ones it was created with.`], true);
+        const hwNote = opts.memory !== undefined || opts.cpus !== undefined || opts.kvm !== undefined ? ", and so are memory, CPUs and KVM" : "";
+        return this.resolved(match, [`Reattached existing desktop ${match.id} ("${opts.name}"); mounts and template are the ones it was created with${hwNote}.`], true);
       }
     }
     const d = await this.create(session, opts);

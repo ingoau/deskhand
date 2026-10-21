@@ -29,7 +29,7 @@ Auth is the session cookie; any `401` sends the dashboard to its login page. Err
 |---|---|---|---|
 | `GET api/desktops` | — | `{ desktops: DesktopSummary[] }` | Polled every 2 s. |
 | `GET api/desktops/:id` | — | `DesktopSummary` | Polled every 1.5 s on the detail page. `404 desktop_not_found` when gone. |
-| `POST api/desktops` | `CreateDesktopRequest` (`{ template?, name?, persistent? }`) | `201 DesktopSummary` (status `starting`) | "+ new" and template "edit" (`name: "edit-<template>"`). `429 limit_reached`, `404 template_not_found`. |
+| `POST api/desktops` | `CreateDesktopRequest` (`{ template?, name?, persistent?, memory?, cpus?, kvm? }`) | `201 DesktopSummary` (status `starting`) | "+ new" and template "edit" (`name: "edit-<template>"`). Phase 6: `memory` ("8g") / `cpus` / `kvm` (omitted = the template's recorded hardware, else defaults). `429 limit_reached`, `404 template_not_found`, `400 invalid_argument` over the max, `409 kvm_unavailable`. `DesktopSummary.hardware` = `{ memoryBytes, cpus, kvm }`. |
 | `DELETE api/desktops/:id` | — | `204` | Kill. |
 | `POST api/desktops/:id/stop` **new** | — | `DesktopSummary` | `docker stop`, files kept; releases the lock and clears attention. |
 | `POST api/desktops/:id/start` **new** | — | `DesktopSummary` | Start a stopped desktop (status `starting`). |
@@ -75,7 +75,7 @@ last point; `region.region` = `[x0, y0, x1, y1]` (zoom region, any corner order)
 
 | Method & path | Request | Response | Notes |
 |---|---|---|---|
-| `GET api/system` | — | `SystemSummary` | Header `6/8 · 46% · 9.8G` = `running/maxDesktops · cpuPercent · memoryUsedBytes`; settings show `logDiskBytes`, `memoryBudgetBytes`, `version`, `auth`. Polled every 5 s. |
+| `GET api/system` | — | `SystemSummary` | Header `6/8 · 46% · 9.8G` = `running/maxDesktops · cpuPercent · memoryUsedBytes`; settings show `logDiskBytes`, `memoryBudgetBytes`, `version`, `auth`. Phase 6 `hardware`: `{ defaultMemoryBytes, defaultCpus, maxMemoryBytes, maxCpus, kvm: available\|unavailable\|disabled\|unknown }` for the "+ new" dialog and the tile markers. Polled every 5 s. |
 | `GET api/tokens` **new route** | — | `{ tokens: ApiToken[] }` | |
 | `POST api/tokens` **new route** | `{ name: string }` | `201 { token: ApiToken, secret: string }` | The secret is shown once. |
 | `DELETE api/tokens/:id` **new route** | — | `204` | |

@@ -48,7 +48,7 @@ human ──dashboard─┘   Fastify, SQLite,     │      Xvfb :0 (agent) · o
   `unshare --user` and, if it fails (plain `docker run`), starts Chromium with `--no-sandbox`, logs a warning and
   reports `chromiumSandbox: "off"` in `/state`. Trade-off: `apparmor=unconfined` loosens the container's own
   confinement a little in exchange for Chrome's renderer sandbox; seccomp stays on and no capabilities are added.
-- Other container settings the manager should use: `ShmSize` 1 GiB, memory/CPU caps from config. Optional env
+- Other container settings the manager should use: `ShmSize` 1 GiB, memory/CPU caps from config (per desktop since phase 6, see "Opt-in hardware"). Optional env
   (mainly for tests): `DESKHAND_LOCK_WAIT_MS` (default 30000), `DESKHAND_STUCK_BUTTON_MS` (30000),
   `DESKHAND_LOG_LEVEL` (info).
 - Base: Debian trixie slim + Node 24 (copied from `node:24-trixie-slim`); daemon bundled with esbuild to
@@ -440,3 +440,71 @@ submitted values from Chromium's page URL inside the desktop (`curl 127.0.0.1:92
 real image: `DEV_DOCKER=1 scripts/dev env DESKHAND_E2E_IMAGE=deskhand-desktop:dev pnpm --filter @deskhand/manager
 test:e2e`). Test ports are configurable: `DESKHAND_TEST_PORTS=17400-17449 DESKHAND_FAKE_PORTS=17450-17499`.
 Reliability suite tasks: `suite/tasks/web-form.json`, `suite/tasks/native-edit-uitree.json`.
+
+## Opt-in hardware: per-desktop memory/CPUs and KVM (phase 6)
+
+Code: `packages/manager/src/hardware.ts` (bounds, precedence, KVM detection), `desktops.ts` (admission, records),
+`runtime/docker.ts` (`Devices`, limits), the desktop entrypoint (device permissions). Goal: make heavy
+workloads such as the Android emulator possible and discoverable without baking any toolchain into the image
+(`docs/android.md` has the findings of a real agent run).
+
+- **Arguments:** `desktop_start(memory?: "8g", cpus?: 4, kvm?: true)`, `POST /api/desktops {memory, cpus, kvm}`
+  (`memory` also accepts bytes as a number), `deskhand start --memory 8g --cpus 4 --kvm`. Bounds:
+  `DESKHAND_DESKTOP_MAX_MEMORY` (default 8g) and `DESKHAND_DESKTOP_MAX_CPUS` (default 4, and never more than the
+  Docker host's CPUs); minimum 512m / 0.25. Over the max → `invalid_argument` whose message states the limit. The
+  defaults stay `DESKHAND_DESKTOP_MEMORY` / `DESKHAND_DESKTOP_CPUS`; the max may not be below them.
+- **Precedence:** explicit argument > the desktop's own hardware (recreation after retention) > the template
+  version's recorded hardware > the defaults. Template values over the current max are capped and the agent is
+  told so; explicit values over the max are an error.
+- **Admission** budgets each active desktop's own memory cap (`sum(active caps) + new cap <= budget`); restarts are
+  admitted by the desktop's own cap. Hardware is stored per desktop (`desktops.memory_bytes|cpus|kvm`, migration 3)
+  and read back from `HostConfig` when a container is imported by label, so restarts, unhealthy restarts and
+  recreations keep it.
+- **KVM:** `DESKHAND_KVM=auto|off` (default auto). Availability is checked **on the Docker host**: the runtime starts
+  the helper image (busybox) with the host's `/dev` bind-mounted read-only and tests `[ -c /hostdev/kvm ]` (the
+  manager itself may run in a container that cannot see the host's devices; a bind of `/dev/kvm` itself is avoided
+  because Docker would create a missing bind source as a directory). Cached 10 min; errors are not cached; done
+  once at startup (bounded to 15 s) so descriptions can state it. `kvm: true` when unavailable or off →
+  `kvm_unavailable` (new error code, HTTP 409) saying which. When granted, the container gets
+  `HostConfig.Devices = [{/dev/kvm → /dev/kvm, rwm}]` and nothing else changes (no capabilities, no privileged).
+- **Making /dev/kvm usable by `agent` — approach and why:** the entrypoint (root) runs
+  `chgrp $AGENT_GID /dev/kvm && chmod 0660 /dev/kvm` when the device is present. That node lives in the container's
+  own `/dev` (a per-container tmpfs that runc populates), so the host's `/dev/kvm` keeps `root:kvm 0660` (checked in
+  the e2e). The agent's **primary** group is used, not a supplementary `kvm` group, because not every process
+  start path keeps supplementary groups: the daemon runs `desktop_exec` through Node's `spawn({uid, gid})`, and
+  libuv calls `setgroups(0)` when it sets a uid, so supplementary groups never reach exec'd commands; `docker exec
+  --user uid:gid` (manifest probe, recipes) has none either. Every path keeps the primary gid: supervisord programs
+  (`user=agent`), the panel (tint2 → `sh` → app), terminals, `desktop_exec`, `docker exec`. Re-applied on every
+  container start (runc recreates the node). Verified: `desktop_exec` and an xterm started from the panel (pixel click;
+  ancestry xterm → sh → tint2) both open `/dev/kvm` O_RDWR and `KVM_GET_API_VERSION` returns 12.
+- **Templates remember hardware:** a save records `TemplateHardware {kvm, memoryBytes|null, cpus|null}` from the
+  desktop (memory/cpus null when they were the defaults, so such templates follow later default changes; nothing is
+  stored when all are defaults). A rebuild runs the recipe on a desktop with the template's memory/CPUs (KVM only if
+  available) and keeps the recorded hardware. A template recording `kvm` on a host without KVM → `kvm_unavailable`
+  that says `kvm: false` starts it anyway.
+- **Discoverability:** desktop_start's description and the MCP `instructions` say: for workloads like the Android
+  emulator or other VMs, start with `kvm: true` and more memory/CPUs (current max and KVM state stated), no root —
+  install user-space toolchains into the home directory, then `template_save` (which records the hardware). The
+  template listing shows `starts with kvm, 8g memory, 4 CPUs`; `template_list` has `hardware`.
+- **Dashboard:** "+ new" has memory / cpus inputs (placeholders = template or host default, hints = max) and a kvm
+  switch (disabled with the reason when unavailable/off); tiles and the detail meta line show `kvm` and the memory cap
+  when it differs from the default (CPU cap on the detail line and the tile tooltip); template pages show hardware.
+- **Long commands:** `desktop_exec` sends an MCP progress notification every 20 s while its command runs (found in the
+  real-agent Android run: Claude Code aborts a call that is silent for 300 s, which cut off an SDK install).
+- **Desktop open-file limit (found while verifying the panel path):** under Docker's default `nofile` (~10⁹ soft and
+  hard) tint2's launchers fork a child that loops closing every possible fd before `exec`, so a panel click left a
+  100 %-CPU `tint2` child and no app for minutes. The entrypoint now sets soft 1024 / hard 524288 (systemd's login
+  defaults) before supervisord; programs needing more raise their soft limit themselves.
+
+**Shared contract additions (phase 6, additive/optional):** error code `kvm_unavailable`; `DesktopHardware`,
+`TemplateHardware`, `HardwareInfo`; `DesktopSummary.hardware?`, `CreateDesktopRequest.memory?|cpus?|kvm?`,
+`SystemSummary.hardware?`, `TemplateVersion.hardware?`, `TemplateSummary.hardware?`. Runtime interface:
+`kvmAvailable()`, `DesktopSpec.kvm?`, `ContainerInfo.memoryBytes?|cpus?|kvm?`. MCP backend: `hardware?()`,
+`StartOptions.memory|cpus|kvm`, `DesktopRef.hardware?`; `agentInstructions(hw)` (AGENT_INSTRUCTIONS stays).
+
+**Tests:** `packages/manager/test/hardware.test.ts` (fake runtime: bounds, admission with per-desktop memory, restart
+/recreation/manager-restart/import keep hardware, KVM available/unavailable/off and caching, template defaults,
+overrides and capping), `cli.test.ts` (`start --memory --cpus --kvm`), dashboard unit + mock e2e (new-desktop dialog,
+markers), and the real-image e2e `packages/manager/test/e2e/hardware.e2e.test.ts`:
+`DEV_DOCKER=1 scripts/dev env DESKHAND_E2E_IMAGE=deskhand-desktop:dev-kvm pnpm --filter @deskhand/manager exec vitest
+run test/e2e/hardware.e2e.test.ts`. Reliability suite: `suite/tasks/android-emulator.json` (slow, expensive).

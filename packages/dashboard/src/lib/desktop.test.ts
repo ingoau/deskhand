@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DesktopSummary } from "@deskhand/shared";
-import { attentionList, displayState, displayTitle, filterDesktops, lockIsLong, matchesQuery, metaLine, sortDesktops, statusLine, tabCounts, uptimeLabel } from "./desktop";
+import { attentionList, displayState, displayTitle, filterDesktops, hardwareMarks, lockIsLong, matchesQuery, metaLine, sortDesktops, statusLine, tabCounts, templateHardwareLabel, uptimeLabel } from "./desktop";
 import { createState, publicDesktop } from "../../mock/data";
 
 const now = Date.parse("2026-10-21T21:16:00Z");
@@ -84,6 +84,18 @@ describe("display state and lines", () => {
       "base@v1 · t3/onboarding-vendors · 18m",
     );
     expect(metaLine(desktop({ session: null }), now)).toBe("research@v2 · 42m");
+  });
+
+  it("hardware markers: kvm and a non-default memory cap", () => {
+    const G = 1024 ** 3;
+    expect(hardwareMarks(desktop({ hardware: { memoryBytes: 2 * G, cpus: 1.5, kvm: false } }))).toEqual([]);
+    expect(hardwareMarks(desktop({ hardware: { memoryBytes: 8 * G, cpus: 4, kvm: true } }))).toEqual(["kvm", "8g"]);
+    expect(hardwareMarks(desktop({ hardware: { memoryBytes: 4 * G, cpus: 2, kvm: false } }), 4 * G)).toEqual([]);
+    expect(hardwareMarks(desktop({ hardware: undefined }))).toEqual([]);
+    expect(metaLine(desktop({ session: null, hardware: { memoryBytes: 1.5 * G, cpus: 2, kvm: true } }), now)).toBe("research@v2 · kvm · 1536m · 42m");
+    expect(templateHardwareLabel({ kvm: true, memoryBytes: 8 * G, cpus: 4 })).toBe("kvm · 8g · 4 cpu");
+    expect(templateHardwareLabel({ kvm: false, memoryBytes: null, cpus: null })).toBe("");
+    expect(templateHardwareLabel(null)).toBe("");
   });
 });
 

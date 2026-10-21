@@ -7,6 +7,7 @@ import { Dialog, DialogContent } from "../components/ui/dialog";
 import { useToast } from "../components/ui/toast";
 import { api, ApiError, errorMessage } from "../lib/api";
 import { cn } from "../lib/cn";
+import { templateHardwareLabel } from "../lib/desktop";
 import { ago, dateTime, formatBytes, since } from "../lib/format";
 import { useNow } from "../lib/now";
 import { keys, putDesktop, useTemplate } from "../lib/queries";
@@ -193,6 +194,16 @@ function TemplateView({ t }: { t: TemplateDetail }) {
                 <dd className="text-dim">{t.extensions.join(", ")}</dd>
               </>
             ) : null}
+            <dt className="text-faint">hardware</dt>
+            <dd className="text-dim" data-testid="template-hardware">
+              {templateHardwareLabel(t.hardware) ? (
+                <>
+                  {templateHardwareLabel(t.hardware)} <span className="text-faint">· new desktops from it default to this</span>
+                </>
+              ) : (
+                "host defaults"
+              )}
+            </dd>
           </dl>
           {t.loggedInSites.length ? (
             <p className="mt-2 text-2xs text-faint">every agent that starts from this template can use these logins.</p>
@@ -405,6 +416,7 @@ function VersionRow({
           {v.byAgent ? <span className="text-amber">· by agent</span> : null}
           <span className="text-faint">
             · base {v.baseVersion} · recipe {v.hasRecipe ? "yes" : "no"}
+            {templateHardwareLabel(v.hardware) ? ` · ${templateHardwareLabel(v.hardware)}` : ""}
             {v.sizeBytes ? ` · ${formatBytes(v.sizeBytes)}` : ""}
             {v.inUse ? ` · ${v.inUse} in use` : ""}
           </span>

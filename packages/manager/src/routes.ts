@@ -170,6 +170,7 @@ export async function registerRoutes(app: FastifyInstance, ctx: RouteContext): P
       memoryBudgetBytes: desktops.budgetBytes,
       logDiskBytes: actionLog.diskBytes(),
       auth: auth.enabled,
+      hardware: desktops.hardware.info(),
     };
   });
 

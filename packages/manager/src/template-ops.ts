@@ -77,6 +77,7 @@ export async function saveDesktopAsTemplate(
     base: templates.baseOf(d.template, d.templateVersion),
     manifest,
     savedFrom: { desktop: d.id, title: d.title, session: sessionLabel },
+    hardware: desktops.hardware.toTemplate(d.hardware),
   });
   return { template, version: template.currentVersion, manifest, notes };
 }
@@ -155,7 +156,19 @@ export class TemplateRebuilder {
     log.info({ template: name, from: cur.version, base: base.version, actor }, "template rebuild started");
     let d: Desktop | undefined;
     try {
-      d = await desktops.create({ sessionId: null, sessionLabel: null, template: BASE_TEMPLATE, name: `rebuild template ${name}`, actor });
+      // Same memory/CPUs as the template records; KVM only when this host has it (recipes install, they rarely need it).
+      const hw = cur.hardware;
+      const kvm = !!hw?.kvm && (await desktops.hardware.kvmAvailable().catch(() => false));
+      d = await desktops.create({
+        sessionId: null,
+        sessionLabel: null,
+        template: BASE_TEMPLATE,
+        name: `rebuild template ${name}`,
+        actor,
+        ...(hw?.memoryBytes ? { memory: Math.min(hw.memoryBytes, cfg.desktopMaxMemoryBytes) } : {}),
+        ...(hw?.cpus ? { cpus: Math.min(hw.cpus, desktops.hardware.info().maxCpus) } : {}),
+        kvm,
+      });
       const cid = d.containerId!;
       const uid = cfg.agentUid;
       const gid = cfg.agentGid;
@@ -192,6 +205,7 @@ export class TemplateRebuilder {
         manifest,
         savedFrom: { desktop: d.id, title: d.title, session: null },
         rebuiltFrom: cur.version,
+        hardware: cur.hardware,
       });
       templates.setRebuild(name, { status: "ok", at: nowIso(), baseVersion: base.version, error: null, version: template.currentVersion });
       log.info({ template: name, version: template.currentVersion }, "template rebuild finished");

@@ -4,10 +4,11 @@
  * takes an optional `desktop`.
  */
 import { z } from "zod";
-import { DeskhandError, type InputAction, type InputResponse, type TemplateSummary } from "@deskhand/shared";
+import { DeskhandError, type DesktopHardware, type HardwareInfo, type InputAction, type InputResponse, type TemplateHardware, type TemplateSummary } from "@deskhand/shared";
 import type { DesktopRef } from "./backend.js";
 import { overlaysFor } from "./describe.js";
 import { formatUiTree, type UiTreeRoot } from "./uitree.js";
+import { hardwareLimits } from "./instructions.js";
 import { text, type Content, type JsonSchema, type ToolContext, type ToolDef, type ToolOutput, type ToolRegistry } from "./registry.js";
 
 // ---------------------------------------------------------------- schema pieces
@@ -48,6 +49,8 @@ function checkCoord(c: [number, number] | undefined, screen: { width: number; he
 }
 
 const LOCK_WAIT_MS = 30_000;
+/** desktop_exec progress notification interval (DESKHAND_EXEC_PROGRESS_MS, for tests). */
+const execProgressMs = () => Number(process.env.DESKHAND_EXEC_PROGRESS_MS) || 20_000;
 const SLACK_MS = 15_000;
 
 function deadlineFor(input: InputAction): number {
@@ -95,6 +98,23 @@ async function runInput(ctx: ToolContext, input: InputAction, line: (r: InputRes
   return { content, overlays: overlaysFor(input.action, args, res.cursor), logScreenshot: raw, hasScreenshot: !!raw };
 }
 
+/** 8589934592 → "8g", 1610612736 → "1536m". */
+export function memArg(bytes: number): string {
+  const gb = bytes / 1024 ** 3;
+  return Number.isInteger(gb) ? `${gb}g` : `${Math.round(bytes / 1024 ** 2)}m`;
+}
+
+/** "kvm, 8g memory, 4 CPUs" ("" when the template records nothing). */
+export function templateHardwareText(hw: TemplateHardware | null | undefined): string {
+  if (!hw) return "";
+  return [hw.kvm ? "kvm" : "", hw.memoryBytes ? `${memArg(hw.memoryBytes)} memory` : "", hw.cpus ? `${hw.cpus} CPUs` : ""].filter(Boolean).join(", ");
+}
+
+function desktopHardwareText(hw: DesktopHardware | undefined): string {
+  if (!hw) return "";
+  return `${memArg(hw.memoryBytes)} memory, ${hw.cpus} CPUs${hw.kvm ? ", kvm" : ""}`;
+}
+
 function describeDesktop(d: DesktopRef): Record<string, unknown> {
   return {
     id: d.id,
@@ -105,6 +125,7 @@ function describeDesktop(d: DesktopRef): Record<string, unknown> {
     default: d.sessionIndex === 0 ? true : undefined,
     screen: `${d.screen.width}x${d.screen.height}`,
     mounts: d.mounts.length ? d.mounts.map((m) => `${m.path}${m.write ? " (rw)" : " (ro)"}`) : undefined,
+    hardware: d.hardware ? desktopHardwareText(d.hardware) : undefined,
   };
 }
 
@@ -123,6 +144,7 @@ export function templateLines(templates: TemplateSummary[]): string {
         t.description.not_for ? `not for: ${clip(t.description.not_for, 100)}` : "",
         t.stale ? `stale: ${t.staleReason ?? "not confirmed recently"}` : "",
         t.outdatedBase ? "outdated base image" : "",
+        t.hardware && templateHardwareText(t.hardware) ? `starts with ${templateHardwareText(t.hardware)}` : "",
       ].filter(Boolean);
       const sum = clip(t.description.summary, 200).replace(/\.$/, "");
       return `- ${t.name}${t.isDefault ? " (default)" : ""}: ${sum}. Use when: ${clip(t.description.use_when, 200)}${flags.length ? ` [${flags.join("; ")}]` : ""}`;
@@ -132,7 +154,7 @@ export function templateLines(templates: TemplateSummary[]): string {
 
 // ---------------------------------------------------------------- registration
 
-export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSummary[]): void {
+export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSummary[], getHardware: () => HardwareInfo | null = () => null): void {
   // ------------------------------------------------ lifecycle
   reg.register({
     name: "desktop_start",
@@ -143,11 +165,19 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
       } catch {
         tpl = "";
       }
+      let hw: HardwareInfo | null = null;
+      try {
+        hw = getHardware();
+      } catch {
+        hw = null;
+      }
+      const defaults = hw ? ` Default ${memArg(hw.defaultMemoryBytes)} memory and ${hw.defaultCpus} CPUs;` : "";
       return [
         "Create a new isolated Linux desktop (1280×800) for this session, or reattach a persistent desktop by `name`, and return its id and first screenshot.",
         "Other desktop tools use this session's first desktop unless you pass `desktop`, and start one with defaults if none exists — call desktop_start first when you need mounts, a template or more than one desktop.",
         "Give each subagent its own desktop: start one per subagent and pass its id in the subagent's prompt so it passes `desktop` on every call.",
         "mounts: host directories (paths on the deskhand host) mounted at the same path, read-only unless write is true. persistent: keep the desktop when the session ends (only the user removes it).",
+        `memory / cpus / kvm: for heavy workloads such as the Android emulator or other VMs, ask for kvm: true (passes /dev/kvm in) and more memory and CPUs.${defaults} ${hardwareLimits(hw)}. You have no root in the desktop: install toolchains into your home directory and save the result with template_save; a template remembers kvm/memory/cpus.`,
         "Templates (pass `template`): reuse a template that fits, update one that is close (start from it, adjust, template_save under the same name), and create a new one only when nothing fits. A template's logins are already active in a desktop started from it. Available now:",
         tpl || "- base: plain desktop",
         "template_info(name) shows a template's full description, manifest and history; after using one, report with template_feedback.",
@@ -162,6 +192,9 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
       template: { type: "string", description: "Template name (default: the default template). See template_list." },
       name: { type: "string", description: "A name shown in the dashboard; also reattaches an existing persistent desktop with that name." },
       persistent: { type: "boolean", description: "Keep this desktop after the session ends (default false)." },
+      memory: { type: "string", description: 'Memory cap, e.g. "8g" or "6144m" (default: the template\'s, else the host default).' },
+      cpus: { type: "number", description: "CPU cap in cores, e.g. 4 (default: the template's, else the host default)." },
+      kvm: { type: "boolean", description: "Pass /dev/kvm into the desktop for hardware-accelerated VMs/emulators (default: the template's, else false)." },
     }),
     parse: z
       .object({
@@ -169,6 +202,12 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
         template: z.string().min(1).max(64).optional(),
         name: z.string().min(1).max(200).optional(),
         persistent: z.boolean().optional(),
+        memory: z
+          .string()
+          .regex(/^\s*\d+(\.\d+)?\s*[kmgt]?(i?b)?\s*$/i, 'memory is a size like "8g" or "6144m"')
+          .optional(),
+        cpus: z.number().positive().max(1024).optional(),
+        kvm: z.boolean().optional(),
       })
       .strict(),
     scope: "session",
@@ -182,9 +221,10 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
       const d = rd.desktop;
       const lines = [
         ...rd.notes,
-        `Desktop ${d.id} is ready (template ${d.template} v${d.templateVersion}, ${d.screen.width}×${d.screen.height}${d.persistent ? ", persistent" : ""}).`,
+        `Desktop ${d.id} is ready (template ${d.template} v${d.templateVersion}, ${d.screen.width}×${d.screen.height}${d.hardware ? `, ${desktopHardwareText(d.hardware)}` : ""}${d.persistent ? ", persistent" : ""}).`,
         all.length > 1 ? `This session now has ${all.length} desktops; pass desktop="${d.id}" to use this one.` : `Other tools use it by default; pass desktop="${d.id}" to be explicit.`,
       ];
+      if (d.hardware?.kvm) lines.push("/dev/kvm is available to you (the agent user) in this desktop.");
       if (d.mounts.length) lines.push(`Mounted: ${d.mounts.map((m) => `${m.path} (${m.write ? "read-write" : "read-only"})`).join(", ")}.`);
       let tpl: TemplateSummary | undefined;
       try {
@@ -206,7 +246,7 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
         content: [text(lines.join("\n")), await imageContent(ctx, raw)],
         desktopId: d.id,
         logScreenshot: raw,
-        summary: `desktop_start ${d.template}${args.name ? ` "${args.name}"` : ""}`,
+        summary: `desktop_start ${d.template}${args.name ? ` "${args.name}"` : ""}${args.kvm ? " kvm" : ""}${args.memory ? ` ${args.memory}` : ""}${args.cpus ? ` ${args.cpus}cpu` : ""}`,
       };
     },
   });
@@ -276,6 +316,7 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
         changed_by_agent_recently: t.recentlyChangedByAgent || undefined,
         outdated_base: t.outdatedBase || undefined,
         recipe: t.hasRecipe || undefined,
+        hardware: templateHardwareText(t.hardware) || undefined,
       }));
       return { content: [text(JSON.stringify(list, null, 1))] };
     },
@@ -302,7 +343,7 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
       "Reuse rule: if a template already fits, use it instead of saving a new one; if one is close, start from it, adjust, and save under the same name; create a new name only when nothing fits.",
       "Before the snapshot deskhand closes the browser (cookies are flushed, so logins persist) and other apps, and clears caches, Downloads and /tmp; mounted host directories are never included. Every login in a template is usable by every agent that starts from it.",
       "A new template needs `description` (summary + use_when at least). Each new version must restate the description, or pass confirm_description: true to keep the previous one unchanged.",
-      "deskhand records the logged-in sites, browser extensions and added packages automatically.",
+      "deskhand records the logged-in sites, browser extensions and added packages automatically, plus the desktop's kvm/memory/cpus (desktops started from the template get them by default).",
     ].join("\n"),
     inputSchema: obj(
       {
@@ -350,7 +391,7 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
       const t = await ctx.backend.saveTemplate(ctx.session, ctx.desktop!.desktop.id, args);
       const lines = [
         `Saved template ${t.name} v${t.currentVersion}. Other agents can now start from it with desktop_start(template="${t.name}").`,
-        `Logged-in sites recorded: ${t.loggedInSites.length ? t.loggedInSites.join(", ") : "none"}.${t.extensions?.length ? ` Extensions: ${t.extensions.join(", ")}.` : ""}`,
+        `Logged-in sites recorded: ${t.loggedInSites.length ? t.loggedInSites.join(", ") : "none"}.${t.extensions?.length ? ` Extensions: ${t.extensions.join(", ")}.` : ""}${templateHardwareText(t.hardware) ? ` Desktops started from it get ${templateHardwareText(t.hardware)} by default.` : ""}`,
         ...(t.notes ?? []),
       ];
       return { content: [text(lines.join("\n"))] };
@@ -716,7 +757,16 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
     input: true,
     async handler(args, ctx) {
       const t = Math.round((args.timeout ?? 60) * 1000);
-      const r = await ctx.desktop!.daemon.exec({ command: args.command, timeout_ms: t, generation: ctx.generation, actor: `mcp:${ctx.actor}` }, LOCK_WAIT_MS + t + SLACK_MS, ctx.signal);
+      // Long commands (downloads, SDK installs) send progress so MCP clients with an idle timeout
+      // (Claude Code aborts a call silent for 300 s) keep waiting.
+      const started = Date.now();
+      const beat = setInterval(() => ctx.progress(Math.round((Date.now() - started) / 1000), Math.round(t / 1000), "Command running"), execProgressMs());
+      let r;
+      try {
+        r = await ctx.desktop!.daemon.exec({ command: args.command, timeout_ms: t, generation: ctx.generation, actor: `mcp:${ctx.actor}` }, LOCK_WAIT_MS + t + SLACK_MS, ctx.signal);
+      } finally {
+        clearInterval(beat);
+      }
       const cap = (s: string) => (s.length > 40_000 ? s.slice(0, 40_000) + `\n… (${s.length - 40_000} more characters truncated)` : s);
       const head = r.timedOut ? `Timed out after ${args.timeout ?? 60} s and was killed.` : r.signal ? `Killed by ${r.signal}.` : `Exit code ${r.exitCode}.`;
       const parts = [head];

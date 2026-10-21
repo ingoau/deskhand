@@ -28,6 +28,8 @@ export interface FakeRuntimeOptions {
   memTotalBytes?: number;
   /** Daemon apiVersion to report (to test version_mismatch). */
   apiVersion?: number;
+  /** Whether the fake "Docker host" has /dev/kvm (default: DESKHAND_FAKE_KVM, else false). */
+  kvm?: boolean;
 }
 
 export class FakeRuntime implements Runtime {
@@ -38,12 +40,17 @@ export class FakeRuntime implements Runtime {
   readonly unpullable = new Set<string>();
   dockerDown = false;
   diskFull = false;
+  /** The fake Docker host has /dev/kvm (tests flip it). */
+  kvm: boolean;
+  /** Calls to kvmAvailable (tests check the result is cached). */
+  kvmChecks = 0;
   private readonly ports: [number, number];
   private readonly root = fs.mkdtempSync(path.join(os.tmpdir(), "deskhand-fake-"));
 
   constructor(readonly opts: FakeRuntimeOptions = {}) {
     const env = process.env.DESKHAND_FAKE_PORTS?.split("-").map(Number);
     this.ports = opts.ports ?? (env && env.length === 2 ? [env[0]!, env[1]!] : [17250, 17299]);
+    this.kvm = opts.kvm ?? ["1", "true", "on", "yes"].includes((process.env.DESKHAND_FAKE_KVM ?? "").toLowerCase());
   }
 
   private check() {
@@ -64,6 +71,12 @@ export class FakeRuntime implements Runtime {
   async hostInfo(): Promise<HostInfo> {
     this.check();
     return { memTotalBytes: this.opts.memTotalBytes ?? os.totalmem(), ncpu: os.cpus().length };
+  }
+
+  async kvmAvailable() {
+    this.check();
+    this.kvmChecks++;
+    return this.kvm;
   }
 
   async ensureNetwork() {
@@ -178,6 +191,9 @@ export class FakeRuntime implements Runtime {
       finishedAt: c.finishedAt,
       image: c.spec.image,
       binds: c.spec.binds,
+      memoryBytes: c.spec.memoryBytes,
+      cpus: c.spec.cpus,
+      kvm: !!c.spec.kvm,
     };
   }
 

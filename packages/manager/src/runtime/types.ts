@@ -12,6 +12,8 @@ export interface DesktopSpec {
   cpus: number;
   /** Host path (already resolved) -> container path. */
   binds: Array<{ source: string; target: string; write: boolean }>;
+  /** Pass the Docker host's /dev/kvm into the container (the entrypoint makes it usable by the agent user). */
+  kvm?: boolean;
 }
 
 export interface ContainerInfo {
@@ -28,6 +30,10 @@ export interface ContainerInfo {
   finishedAt: string | null;
   image: string;
   binds: Array<{ source: string; target: string; write: boolean }>;
+  /** Resource caps and devices from the container's HostConfig (for importing containers found by label). */
+  memoryBytes?: number;
+  cpus?: number;
+  kvm?: boolean;
 }
 
 export interface ContainerStats {
@@ -79,6 +85,8 @@ export interface Runtime {
   /** Throws docker_unavailable when the engine cannot be reached. */
   ping(): Promise<void>;
   hostInfo(): Promise<HostInfo>;
+  /** True when the Docker host has a /dev/kvm character device (checked on the Docker host, not where the manager runs). */
+  kvmAvailable(): Promise<boolean>;
   ensureNetwork(): Promise<void>;
   /** Pulls the image if it is not present (image_pull_failed on failure). */
   ensureImage(image: string): Promise<void>;

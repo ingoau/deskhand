@@ -288,6 +288,7 @@ function makeDesktop(t0: number, s: DesktopSeed): MockDesktop {
     cpuPercent: status === "running" ? (s.cpu ?? 2) : null,
     memoryBytes: status === "running" ? (s.memMb ?? 400) * 1024 * 1024 : null,
     diskBytes: status === "starting" ? null : 180 * 1024 * 1024,
+    hardware: { memoryBytes: 2 * 1024 ** 3, cpus: 1.5, kvm: false },
     scene: s.scene,
     accent: s.accent,
     readyAt: status === "starting" ? t0 + 6 * S : undefined,
@@ -562,6 +563,7 @@ export function systemSummary(state: MockState): SystemSummary {
     memoryBudgetBytes: 24 * 1024 ** 3,
     logDiskBytes: state.logDiskBytes,
     auth: state.authRequired,
+    hardware: { defaultMemoryBytes: 2 * 1024 ** 3, defaultCpus: 1.5, maxMemoryBytes: 8 * 1024 ** 3, maxCpus: 4, kvm: "available" },
   };
 }
 
