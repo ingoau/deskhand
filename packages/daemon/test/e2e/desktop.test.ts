@@ -119,13 +119,29 @@ describe("input actions", () => {
     await input({ action: "key", text: "Escape" });
   });
 
-  it("scroll scrolls the page under the pointer", async () => {
-    await page.eval("document.body.style.height = '5000px'; window.scrollTo(0, 0); 1");
+  it("middle_click and left_click with ctrl reach the page with the right button and modifiers", async () => {
+    await page.eval("window.__btn = []; document.addEventListener('mousedown', (e) => window.__btn.push([e.button, e.ctrlKey, e.altKey]), true); 1");
+    await input({ action: "middle_click", coordinate: [700, 600] });
+    await input({ action: "left_click", coordinate: [720, 600], text: "ctrl+alt" });
+    await input({ action: "key", text: "Escape" });
+    expect(await page.eval("window.__btn")).toEqual([
+      [1, false, false],
+      [0, true, true],
+    ]);
+  });
+
+  it("scroll scrolls the page under the pointer, vertically and horizontally", async () => {
+    await page.eval("document.body.style.height = '5000px'; document.body.style.width = '5000px'; window.scrollTo(0, 0); 1");
     await input({ action: "scroll", coordinate: [640, 400], scroll_direction: "down", scroll_amount: 5 });
     expect(await until(async () => (await page.eval<number>("window.scrollY")) > 100 && true, "scrollY")).toBe(true);
     const y = await page.eval<number>("window.scrollY");
     await input({ action: "scroll", coordinate: [640, 400], scroll_direction: "up", scroll_amount: 10 });
     await until(async () => (await page.eval<number>("window.scrollY")) < y, "scroll up");
+    await input({ action: "scroll", coordinate: [640, 400], scroll_direction: "right", scroll_amount: 5 });
+    await until(async () => (await page.eval<number>("window.scrollX")) > 50, "scroll right");
+    const x = await page.eval<number>("window.scrollX");
+    await input({ action: "scroll", coordinate: [640, 400], scroll_direction: "left", scroll_amount: 5 });
+    await until(async () => (await page.eval<number>("window.scrollX")) < x, "scroll left");
   });
 });
 

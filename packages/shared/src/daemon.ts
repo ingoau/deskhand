@@ -68,9 +68,15 @@ export const InputRequest = z.object({
   /** Return a settled screenshot afterwards (default true). */
   screenshot: z.boolean().optional(),
   format: ImageFormat.optional(),
-  /** Hard deadline for the whole action in ms (default 10000). */
+  /**
+   * Hard deadline for the whole action in ms (default 10000). The daemon always allows at least the
+   * action's own duration (hold_key/wait duration, drag duration_ms + hold_ms, typing time) + 10 s.
+   */
   deadline_ms: z.number().int().positive().optional(),
-  /** Who sent it, recorded in the daemon log: e.g. "mcp:<session>" or "dashboard". */
+  /**
+   * Who sent it, recorded in the daemon log: e.g. "mcp:<session>" or "dashboard". A request whose actor
+   * equals the lock holder is not blocked by that lock (the dashboard can send input while it holds it).
+   */
   actor: z.string().optional(),
 });
 export type InputRequest = z.infer<typeof InputRequest>;
@@ -135,8 +141,37 @@ export const DaemonState = z.object({
   uptimeSec: z.number(),
   heldButtons: z.array(z.number().int()),
   cdpAvailable: z.boolean(),
+  /** Whether Chromium last started with its sandbox ("off" = --no-sandbox fallback), null if not started yet. */
+  chromiumSandbox: z.enum(["on", "off"]).nullable().optional(),
+  /** Input actions waiting in the per-desktop queue. */
+  queueLength: z.number().int().optional(),
 });
 export type DaemonState = z.infer<typeof DaemonState>;
+
+/** GET /cursor */
+export const CursorResponse = z.object({ x: z.number().int(), y: z.number().int(), cursor: Coordinate });
+export type CursorResponse = z.infer<typeof CursorResponse>;
+
+/**
+ * POST /release-all — release every mouse button and key the daemon holds. The manager calls it on
+ * desktop_stop and MCP session end (takeover and the ~30 s stuck-button timer do it automatically).
+ */
+export const ReleaseAllResponse = z.object({ released: z.array(z.string()) });
+export type ReleaseAllResponse = z.infer<typeof ReleaseAllResponse>;
+
+/** PUT /files response. */
+export const FilePutResponse = z.object({ bytes: z.number().int() });
+
+/** POST /quiesce response. */
+export const QuiesceResponse = z.object({
+  ok: z.literal(true),
+  chromiumClosed: z.boolean(),
+  closedWindows: z.number().int(),
+  killed: z.array(z.string()),
+  cleared: z.array(z.string()),
+  notes: z.array(z.string()),
+});
+export type QuiesceResponse = z.infer<typeof QuiesceResponse>;
 
 /** POST /lock */
 export const LockRequest = z.object({ holder: z.string() });
@@ -171,6 +206,8 @@ export const UiNode: z.ZodType<UiNodeT> = z.lazy(() =>
     name: z.string(),
     states: z.array(z.string()).optional(),
     box: z.tuple([z.number(), z.number(), z.number(), z.number()]).optional(), // x, y, w, h in screen px
+    /** On top-level windows: the application's name (e.g. "Chromium", "mousepad"). */
+    app: z.string().optional(),
     children: z.array(UiNode).optional(),
   }),
 );
@@ -179,13 +216,18 @@ export interface UiNodeT {
   name: string;
   states?: string[];
   box?: [number, number, number, number];
+  app?: string;
   children?: UiNodeT[];
 }
 
 /**
  * GET /cdp/json/version and websocket /cdp/devtools/... proxy Chromium's
  * remote-debugging port (localhost-only inside the container). The daemon
- * rewrites webSocketDebuggerUrl to point back through itself.
+ * rewrites webSocketDebuggerUrl to point back through itself: ws://<Host>/cdp/...,
+ * or, behind a proxy, ws[s]://<X-Forwarded-Host><X-Forwarded-Prefix>/cdp/...
+ * (wss when X-Forwarded-Proto is https). Chromium is launched on demand.
+ * The daemon does not gate CDP messages by the lock; callers (the manager) check
+ * /state's lock and generation before forwarding browser tool calls.
  *
  * POST /quiesce — close Chromium via CDP (flushes cookies), close other apps,
  * clear caches, ~/Downloads and /tmp. Used before `docker commit`.

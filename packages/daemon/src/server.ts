@@ -118,7 +118,7 @@ export function createServer(opts: ServerOptions): http.Server {
         } catch {
           /* display down: report null */
         }
-        const state: DaemonState & { chromiumSandbox: "on" | "off" | null; queueLength: number } = {
+        const state: DaemonState = {
           version: DESKHAND_VERSION,
           apiVersion: DAEMON_API_VERSION,
           title,
