@@ -121,6 +121,17 @@ export class DockerRuntime implements Runtime {
     }
   }
 
+  /**
+   * Looks for /dev/kvm on the Docker host (the manager may run in a container that cannot see the
+   * host's /dev): a short-lived helper with the host's /dev mounted read-only checks for the
+   * character device. The caller caches the answer.
+   */
+  async kvmAvailable(): Promise<boolean> {
+    const r = await this.runHelper(["sh", "-c", "if [ -c /hostdev/kvm ]; then echo yes; else echo no; fi"], ["/dev:/hostdev:ro"]);
+    if (r.exitCode !== 0) throw new DeskhandError("internal", "deskhand could not check the Docker host for /dev/kvm.", { stderr: r.stderr.slice(0, 300) });
+    return r.stdout.trim() === "yes";
+  }
+
   async ensureNetwork(): Promise<void> {
     if (this.networkReady) return;
     try {
@@ -224,6 +235,7 @@ export class DockerRuntime implements Runtime {
           // `docker commit`, so template images cannot carry a desktop's key. 0755: agent processes source
           // session.env/screen.env from it (the entrypoint sets that mode anyway); the key file itself is 0600 root.
           Tmpfs: { [DESKTOP_RUNTIME_DIR]: "rw,nosuid,nodev,noexec,size=4m,mode=0755,uid=0,gid=0" },
+          ...(spec.kvm ? { Devices: [{ PathOnHost: "/dev/kvm", PathInContainer: "/dev/kvm", CgroupPermissions: "rwm" }] } : {}),
           Binds: spec.binds.map((b) => `${b.source}:${b.target}:${b.write ? "rw" : "ro"}`),
           RestartPolicy: { Name: "no" },
         },
@@ -345,6 +357,9 @@ export class DockerRuntime implements Runtime {
       image: c.Config?.Image ?? "",
       imageId: c.Image,
       binds,
+      memoryBytes: c.HostConfig?.Memory || undefined,
+      cpus: c.HostConfig?.NanoCpus ? c.HostConfig.NanoCpus / 1e9 : undefined,
+      kvm: ((c.HostConfig?.Devices ?? []) as Array<{ PathInContainer?: string }>).some((d) => d.PathInContainer === "/dev/kvm"),
     };
   }
 

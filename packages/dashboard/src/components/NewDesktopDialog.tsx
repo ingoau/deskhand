@@ -3,7 +3,8 @@ import { useNavigate } from "react-router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, errorMessage } from "../lib/api";
 import { cn } from "../lib/cn";
-import { keys, putDesktop, useTemplates } from "../lib/queries";
+import { memLabel, templateHardwareLabel } from "../lib/desktop";
+import { keys, putDesktop, useSystem, useTemplates } from "../lib/queries";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent, Field, inputClass } from "./ui/dialog";
 import { Switch } from "./ui/switch";
@@ -13,6 +14,20 @@ export function NewDesktopDialog({ open, onOpenChange, template: initial }: { op
   const [template, setTemplate] = useState<string | undefined>(initial);
   const [name, setName] = useState("");
   const [persistent, setPersistent] = useState(false);
+  // Hardware (phase 6): empty / null = the template's recorded hardware, else the host defaults.
+  const [memory, setMemory] = useState("");
+  const [cpus, setCpus] = useState("");
+  const [kvm, setKvm] = useState<boolean | null>(null);
+  const { data: sys } = useSystem();
+  const hw = sys?.hardware;
+  const tpl = templates?.find((t) => t.name === template);
+  const tplHw = tpl?.hardware ?? null;
+  const kvmOn = kvm ?? tplHw?.kvm ?? false;
+  const kvmUsable = hw?.kvm === "available" || hw?.kvm === "unknown";
+  const kvmHint =
+    hw?.kvm === "unavailable" ? "this host has no /dev/kvm" : hw?.kvm === "disabled" ? "turned off (DESKHAND_KVM=off)" : "passes /dev/kvm in, for emulators and VMs";
+  const memDefault = tplHw?.memoryBytes ?? hw?.defaultMemoryBytes;
+  const cpuDefault = tplHw?.cpus ?? hw?.defaultCpus;
   const qc = useQueryClient();
   const navigate = useNavigate();
 
@@ -21,13 +36,24 @@ export function NewDesktopDialog({ open, onOpenChange, template: initial }: { op
   }, [open, template, templates]);
 
   const create = useMutation({
-    mutationFn: () => api.createDesktop({ template, name: name.trim() || undefined, persistent }),
+    mutationFn: () =>
+      api.createDesktop({
+        template,
+        name: name.trim() || undefined,
+        persistent,
+        ...(memory.trim() ? { memory: memory.trim() } : {}),
+        ...(cpus.trim() ? { cpus: Number(cpus) } : {}),
+        ...(kvm !== null ? { kvm } : {}),
+      }),
     onSuccess: (d) => {
       qc.setQueryData(keys.desktops, (list: unknown) => (Array.isArray(list) ? [...list, d] : list));
       putDesktop(qc, d);
       void qc.invalidateQueries({ queryKey: keys.system });
       onOpenChange(false);
       setName("");
+      setMemory("");
+      setCpus("");
+      setKvm(null);
       navigate(`/desktops/${d.id}`);
     },
   });
@@ -49,7 +75,10 @@ export function NewDesktopDialog({ open, onOpenChange, template: initial }: { op
                 type="button"
                 role="radio"
                 aria-checked={template === t.name}
-                onClick={() => setTemplate(t.name)}
+                onClick={() => {
+                  setTemplate(t.name);
+                  setKvm(null);
+                }}
                 className={cn("block w-full border-b border-line px-3 py-2 text-left last:border-b-0", template === t.name ? "bg-raised" : "hover:bg-raised/60")}
               >
                 <div className="flex items-center gap-2">
@@ -57,6 +86,11 @@ export function NewDesktopDialog({ open, onOpenChange, template: initial }: { op
                   <span className="font-medium text-fg">{t.name}</span>
                   <span className="text-faint">v{t.currentVersion}</span>
                   {t.isDefault ? <span className="text-2xs text-muted">default</span> : null}
+                  {templateHardwareLabel(t.hardware) ? (
+                    <span className="ml-auto text-2xs text-faint" data-testid="template-hw">
+                      {templateHardwareLabel(t.hardware)}
+                    </span>
+                  ) : null}
                 </div>
                 <div className="mt-0.5 truncate pl-[14px] text-xs text-muted">{t.description.summary}</div>
               </button>
@@ -65,6 +99,39 @@ export function NewDesktopDialog({ open, onOpenChange, template: initial }: { op
           <Field label="title (optional)">
             <input className={inputClass} value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. vendor-onboarding" autoComplete="off" />
           </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="memory" hint={hw ? `max ${memLabel(hw.maxMemoryBytes)}` : undefined}>
+              <input
+                className={inputClass}
+                value={memory}
+                onChange={(e) => setMemory(e.target.value)}
+                placeholder={memDefault ? memLabel(memDefault) : "2g"}
+                pattern="\s*\d+(\.\d+)?\s*[kKmMgGtT]?\s*"
+                aria-label="memory"
+                autoComplete="off"
+              />
+            </Field>
+            <Field label="cpus" hint={hw ? `max ${hw.maxCpus}` : undefined}>
+              <input
+                className={inputClass}
+                value={cpus}
+                onChange={(e) => setCpus(e.target.value)}
+                placeholder={cpuDefault ? String(cpuDefault) : "1.5"}
+                type="number"
+                step="0.25"
+                min="0.25"
+                max={hw?.maxCpus}
+                aria-label="cpus"
+              />
+            </Field>
+          </div>
+          <label className="mb-3 flex items-center justify-between gap-3">
+            <span>
+              <span className="block text-sm text-fg">kvm</span>
+              <span className="block text-2xs text-faint">{kvmHint}</span>
+            </span>
+            <Switch checked={kvmOn} onChange={setKvm} label="kvm" disabled={!kvmUsable && !kvmOn} />
+          </label>
           <label className="mb-4 flex items-center justify-between gap-3">
             <span>
               <span className="block text-sm text-fg">persistent</span>

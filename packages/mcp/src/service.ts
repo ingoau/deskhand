@@ -8,7 +8,7 @@ import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, ListToolsRequestSchema, isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import type { McpBackend, Principal, SessionEndReason, SessionInfo } from "./backend.js";
-import { AGENT_INSTRUCTIONS } from "./instructions.js";
+import { agentInstructions } from "./instructions.js";
 import { SessionState, ToolRegistry } from "./registry.js";
 import { registerTools } from "./tools.js";
 import { summarize } from "./describe.js";
@@ -66,7 +66,7 @@ export class McpService {
     private readonly opts: McpServiceOptions,
   ) {
     this.registry = new ToolRegistry(backend, summarize);
-    registerTools(this.registry, () => backend.listTemplates());
+    registerTools(this.registry, () => backend.listTemplates(), () => backend.hardware?.() ?? null);
     this.unsubscribe = backend.onTemplatesChanged(() => this.notifyToolsChanged());
     this.timer = setInterval(() => void this.sweep(), opts.sweepIntervalMs ?? 30_000);
     this.timer.unref();
@@ -83,7 +83,7 @@ export class McpService {
   private createServer(live: () => LiveSession | undefined): Server {
     const server = new Server(
       { name: "deskhand", version: this.backend.version },
-      { capabilities: { tools: { listChanged: true } }, instructions: this.backend.instructions ?? AGENT_INSTRUCTIONS },
+      { capabilities: { tools: { listChanged: true } }, instructions: this.backend.instructions ?? agentInstructions(this.backend.hardware?.() ?? null) },
     );
     server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: this.registry.list() }));
     server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {

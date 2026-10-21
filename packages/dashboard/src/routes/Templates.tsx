@@ -3,6 +3,7 @@ import type { TemplateFeedback, TemplateSummary } from "@deskhand/shared";
 import { MobileHeader } from "../components/Nav";
 import { errorMessage } from "../lib/api";
 import { cn } from "../lib/cn";
+import { templateHardwareLabel } from "../lib/desktop";
 import { ago, since } from "../lib/format";
 import { useNow } from "../lib/now";
 import { useTemplates } from "../lib/queries";
@@ -97,6 +98,11 @@ export function Templates() {
                     ) : (
                       <span className="text-2xs text-faint">no logins</span>
                     )}
+                    {templateHardwareLabel(t.hardware) ? (
+                      <span className="rounded-sm border border-line px-1.5 text-2xs text-faint" data-testid="template-hw" title="desktops started from this template get this hardware by default">
+                        {templateHardwareLabel(t.hardware)}
+                      </span>
+                    ) : null}
                   </div>
                 </div>
                 <div className="mt-2 min-w-0 text-xs sm:mt-0 sm:text-right">

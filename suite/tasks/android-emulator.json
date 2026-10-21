@@ -1,0 +1,90 @@
+{
+  "id": "android-emulator",
+  "title": "Android emulator: an agent sets up the SDK on its own in a KVM desktop, boots an emulator and reports the home screen",
+  "about": [
+    "Covers phase 6 (opt-in hardware). The task gives no hints. The agent has to discover from desktop_start's description and the MCP instructions that it should start a desktop with kvm: true and more memory/CPUs, then install a JDK and the Android SDK into its home directory without root. deskhand ships no Android tools or template.",
+    "Verified from the manager: adb inside the desktop lists the emulator as 'device' with boot completed and the launcher in front, and a screenshot of the desktop shows the emulator window.",
+    "SLOW AND EXPENSIVE: downloads about 3 GB (JDK, SDK tools, emulator, system image), uses up to 8g / 4 CPUs and about 7 GB of disk, and takes 10–20 minutes. Run on demand only, never in CI. Needs a Docker host with /dev/kvm."
+  ],
+  "phase": 6,
+  "slow": true,
+  "expensive": true,
+  "requires": {
+    "kvm": true,
+    "diskGb": 10,
+    "memory": "8g",
+    "cpus": 4
+  },
+  "fixtures": {},
+  "agents": [
+    {
+      "id": "android",
+      "model": "claude-sonnet-5-5",
+      "allowedTools": [
+        "mcp__deskhand__*"
+      ],
+      "maxTurns": 120,
+      "timeoutMinutes": 60,
+      "prompt": "Set up what you need to run an Android emulator on a deskhand desktop, boot it, and report what the emulator's home screen shows; take a screenshot. Leave the emulator running on the desktop when you are done (do not stop the desktop)."
+    }
+  ],
+  "runner": [
+    "Mark the agent's desktop persistent (POST /api/desktops/{id}/persistent {persistent:true}) as soon as it appears, the way a user would from the dashboard, so the checks can run after the agent's MCP session ends.",
+    "Claude Code -p exits without ending its MCP session. To run desktop_exec on the desktop afterwards, resume the agent's session id with the same token, or use docker exec -u agent."
+  ],
+  "checks": [
+    {
+      "id": "kvm-desktop",
+      "after": "android",
+      "expect": "the agent started a desktop with kvm and more than the default memory (it found the option on its own)",
+      "transcript": "android",
+      "assert": "toolCalls.some(c => c.name === 'mcp__deskhand__desktop_start' && c.input.kvm === true)"
+    },
+    {
+      "id": "container-hardware",
+      "after": "android",
+      "expect": "the desktop's container has /dev/kvm as a device and a memory cap above the default",
+      "request": "GET /api/desktops/{id}",
+      "assert": "body.hardware.kvm === true && body.hardware.memoryBytes > 2 * 1024 ** 3"
+    },
+    {
+      "id": "adb-device",
+      "after": "android",
+      "expect": "inside the desktop, adb lists the emulator as 'device', boot is completed, and the launcher is the resumed activity",
+      "desktopExec": {
+        "desktopId": "{id}",
+        "command": "A=$(command -v adb || find ~ -name adb -type f -path '*platform-tools*' 2>/dev/null | head -1); $A devices; $A shell getprop sys.boot_completed; $A shell dumpsys activity activities | grep -m1 ResumedActivity"
+      },
+      "assert": "/emulator-\\d+\\s+device/.test(stdout) && /^1$/m.test(stdout) && /launcher/i.test(stdout)"
+    },
+    {
+      "id": "screenshot",
+      "after": "android",
+      "expect": "a screenshot of the desktop shows the Android emulator window with a booted home screen (judged by a person or a vision check)",
+      "request": "GET /api/desktops/{id}/screenshot",
+      "assert": "manual: the emulator window shows an Android launcher"
+    },
+    {
+      "id": "reported",
+      "after": "android",
+      "expect": "the final answer describes the home screen (launcher, apps, search bar or similar)",
+      "assert": "/home screen/i.test(finalText(android)) && /(launcher|search|apps?)/i.test(finalText(android))"
+    },
+    {
+      "id": "template",
+      "after": "android",
+      "optional": true,
+      "expect": "the agent saved the setup as a template that records kvm (encouraged by the instructions, not required by the task)",
+      "request": "GET /api/templates",
+      "assert": "body.templates.some(t => t.hardware && t.hardware.kvm)"
+    }
+  ],
+  "cleanup": [
+    "DELETE /api/desktops/{id} (removes the SDK, about 7 GB, with the container)",
+    "DELETE /api/templates/{name} if one was saved"
+  ],
+  "reference_run": {
+    "date": "2026-10-21",
+    "result": "pass (claude-sonnet-5-5, 11 turns, 11 min 45 s, $0.16): desktop_start(kvm, 8g, 4 cpus), Temurin JDK 17 and the command-line tools into ~/android (zip unpacked with Python because there is no unzip), sdkmanager platform-tools + emulator + android-34 google_apis x86_64, a Pixel 6 AVD, then emulator -gpu swiftshader_indirect -no-audio -memory 3072 -cores 3. The first install call ran past Claude Code's 300 s MCP idle limit and was cut off; the agent polled and continued. desktop_exec now sends progress. Checked afterwards: adb 'emulator-5554 device', boot_completed 1, Android 14, NexusLauncherActivity resumed, emulator -accel-check 'KVM (version 12) is installed and usable'. No template saved. See docs/android.md."
+  }
+}

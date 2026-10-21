@@ -61,6 +61,27 @@ describe("deskhand CLI", () => {
     expect((await cli(["template", "rollback", "base", "7"])).code).toBe(1);
   });
 
+  it("start creates a desktop with --memory/--cpus/--kvm; start <id> restarts", async () => {
+    const rt = t.runtime as FakeRuntime;
+    rt.kvm = true;
+    (t.m.desktops.hardware as unknown as { kvmCache: unknown }).kvmCache = null;
+    const s = await cli(["start", "--memory", "3g", "--cpus", "2", "--kvm", "--name", "cli-hw"]);
+    expect(s.code, s.err).toBe(0);
+    expect(s.out).toMatch(/^\w+ starting {2}base:v1 {2}3g memory, 2 cpus, kvm\n$/);
+    const id = s.out.split(" ")[0]!;
+    expect([...rt.containers.values()].find((c) => c.spec.id === id)!.spec).toMatchObject({ memoryBytes: 3 * 1024 ** 3, cpus: 2, kvm: true });
+    await waitFor(() => t.m.desktops.get(id)?.status === "running");
+    expect((await cli(["stop", id])).out).toBe(`${id} stopped\n`);
+    expect((await cli(["start", id])).out).toBe(`${id} running\n`);
+    expect((await cli(["start", id, "--kvm"])).err).toContain("takes no options");
+    const over = await cli(["start", "--memory", "64g"]);
+    expect(over.code).toBe(1);
+    expect(over.err).toContain("invalid_argument");
+    expect((await cli(["start", "--cpus", "lots"])).err).toContain("--cpus must be a positive number");
+    expect((await cli(["rm", id])).code).toBe(0);
+    rt.kvm = false;
+  });
+
   it("shows, edits, rebuilds, diffs and rolls back templates", async () => {
     const d = await t.m.desktops.create({ sessionId: null, sessionLabel: null, actor: "test" });
     const save = (desc: string) =>

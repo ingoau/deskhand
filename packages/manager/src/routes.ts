@@ -171,6 +171,7 @@ export async function registerRoutes(app: FastifyInstance, ctx: RouteContext): P
       logDiskBytes: actionLog.diskBytes(),
       auth: auth.enabled,
       warnings: desktops.warnings(),
+      hardware: desktops.hardware.info(),
     };
   });
 

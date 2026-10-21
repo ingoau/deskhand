@@ -36,6 +36,44 @@ export const LastAction = z.object({
 });
 export type LastAction = z.infer<typeof LastAction>;
 
+/** The resources a desktop runs with (phase 6, opt-in hardware). */
+export const DesktopHardware = z.object({
+  /** Memory cap in bytes. */
+  memoryBytes: z.number().int(),
+  /** CPU cap (cores, may be fractional). */
+  cpus: z.number(),
+  /** /dev/kvm is passed into the desktop (usable by the agent user). */
+  kvm: z.boolean(),
+});
+export type DesktopHardware = z.infer<typeof DesktopHardware>;
+
+/**
+ * Hardware a template version records from the desktop it was saved from. Desktops started from
+ * the template default to it (explicit arguments override). memoryBytes/cpus are null when the
+ * desktop ran with the manager's defaults (so it follows the defaults later).
+ */
+export const TemplateHardware = z.object({
+  kvm: z.boolean(),
+  memoryBytes: z.number().int().nullable(),
+  cpus: z.number().nullable(),
+});
+export type TemplateHardware = z.infer<typeof TemplateHardware>;
+
+/** Per-desktop resource defaults and limits of this manager (GET /api/system `hardware`). */
+export const HardwareInfo = z.object({
+  defaultMemoryBytes: z.number().int(),
+  defaultCpus: z.number(),
+  /** DESKHAND_DESKTOP_MAX_MEMORY / DESKHAND_DESKTOP_MAX_CPUS. */
+  maxMemoryBytes: z.number().int(),
+  maxCpus: z.number(),
+  /**
+   * available: the Docker host has /dev/kvm and DESKHAND_KVM=auto; unavailable: no /dev/kvm;
+   * disabled: DESKHAND_KVM=off; unknown: not detected yet (the Docker engine was unreachable).
+   */
+  kvm: z.enum(["available", "unavailable", "disabled", "unknown"]),
+});
+export type HardwareInfo = z.infer<typeof HardwareInfo>;
+
 export const DesktopSummary = z.object({
   id: z.string(),
   /** Container name, e.g. deskhand-7f3a. */
@@ -65,6 +103,8 @@ export const DesktopSummary = z.object({
   cpuPercent: z.number().nullable(),
   memoryBytes: z.number().nullable(),
   diskBytes: z.number().nullable(),
+  /** Phase 6: memory/CPU caps and KVM (optional so older clients and mocks keep working). */
+  hardware: DesktopHardware.optional(),
 });
 export type DesktopSummary = z.infer<typeof DesktopSummary>;
 
@@ -75,6 +115,13 @@ export const CreateDesktopRequest = z.object({
   mounts: z.array(Mount).optional(),
   persistent: z.boolean().optional(),
   screen: z.object({ width: z.number().int().min(640).max(1920), height: z.number().int().min(480).max(1080) }).optional(),
+  // ---- phase 6 (opt-in hardware). Omitted = the template's recorded hardware, else the defaults.
+  /** Memory cap, e.g. "8g" or "4096m" (or bytes as a number); at most DESKHAND_DESKTOP_MAX_MEMORY. */
+  memory: z.union([z.string().min(1).max(32), z.number().int().positive()]).optional(),
+  /** CPU cap in cores, e.g. 4 or 2.5; at most DESKHAND_DESKTOP_MAX_CPUS. */
+  cpus: z.number().positive().optional(),
+  /** Pass /dev/kvm into the desktop (for emulators and other VMs); kvm_unavailable if the host has none. */
+  kvm: z.boolean().optional(),
 });
 export type CreateDesktopRequest = z.infer<typeof CreateDesktopRequest>;
 
@@ -91,6 +138,8 @@ export const SystemSummary = z.object({
   auth: z.boolean(),
   /** Host problems worth the operator's attention (e.g. Chromium's sandbox unavailable); shown in settings. */
   warnings: z.array(z.string()).optional(),
+  /** Phase 6: per-desktop resource defaults/limits and KVM availability. */
+  hardware: HardwareInfo.optional(),
 });
 export type SystemSummary = z.infer<typeof SystemSummary>;
 
@@ -168,6 +217,8 @@ export const TemplateVersion = z.object({
   recipe: z.string().nullable().optional(),
   /** Diff against the previous kept version. */
   changes: TemplateChanges.optional(),
+  /** Phase 6: hardware recorded from the desktop this version was saved from (null for older versions). */
+  hardware: TemplateHardware.nullable().optional(),
 });
 export type TemplateVersion = z.infer<typeof TemplateVersion>;
 
@@ -227,6 +278,8 @@ export const TemplateSummary = z.object({
     })
     .nullable()
     .optional(),
+  /** Phase 6: the current version's recorded hardware (desktops started from it default to this). */
+  hardware: TemplateHardware.nullable().optional(),
 });
 export type TemplateSummary = z.infer<typeof TemplateSummary>;
 
