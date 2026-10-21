@@ -65,6 +65,9 @@ jobs:
           load: true
           cache-from: type=gha,scope=desktop-amd64
           cache-to: type=gha,mode=max,scope=desktop-amd64
+      # Ubuntu 23.10+ blocks unprivileged user namespaces via AppArmor, which Chromium's sandbox needs.
+      # Without this the desktop falls back to --no-sandbox (docs/security.md).
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: pnpm --filter @deskhand/daemon test:e2e
       - run: pnpm --filter @deskhand/manager test:docker
       - run: pnpm --filter @deskhand/manager test:e2e
