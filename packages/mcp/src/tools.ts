@@ -671,7 +671,7 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
   reg.register({
     name: "ui_tree",
     description:
-      "Read the accessibility tree of the desktop's windows (AT-SPI) — the precise way to work with native apps (text editors, file managers, dialogs). One line per element: role \"name\" [states] value=… @x,y box=[x,y,w,h]. @x,y is the point to click in screenshot pixels (visible part of the element, not covered by another window); click it with left_click instead of estimating from the screenshot. Windows are listed topmost first; [active] marks the focused one. `window` keeps only windows whose title or app name contains that text (case-insensitive) — use it for big trees. For web pages prefer browser_snapshot.",
+      "Read the accessibility tree of the desktop's windows (AT-SPI) — the precise way to work with native apps (text editors, file managers, dialogs). One line per element: role \"name\" [states] value=… @x,y box=[x,y,w,h]. @x,y is the point to click in screenshot pixels (visible part of the element, not covered by another window); click it with left_click instead of estimating from the screenshot. Windows are listed topmost first; [active] marks the focused one. Only elements currently on screen are listed: scroll to reveal more. `window` keeps only windows whose title or app name contains that text (case-insensitive) — use it for big trees. For web pages prefer browser_snapshot.",
     inputSchema: obj({ window: { type: "string", description: "Only windows whose title or app name contains this text (case-insensitive)." }, desktop: desktopProp }),
     parse: z.object({ window: z.string().max(200).optional(), desktop: zDesktop }).strict(),
     scope: "desktop",

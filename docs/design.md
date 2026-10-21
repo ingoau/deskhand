@@ -113,6 +113,8 @@ human ──dashboard─┘   Fastify, SQLite,     │      Xvfb :0 (agent) · o
 `CursorResponse` (`{x, y, cursor}`); `POST /release-all` → `ReleaseAllResponse` (`{released: string[]}`);
 `FilePutResponse`; `QuiesceResponse`; `UiNode.app?`; doc comments on the deadline extension, the lock-holder
 actor rule and the CDP URL rewriting (`X-Forwarded-Host/-Prefix/-Proto`).
+Phase 3 (additive): `UiNode.description?`, `UiNode.value?`, `UiNode.z?`, window states `active` (X focus only),
+`minimized`, `popup`, and `/ui-tree`'s root `stack` (every window, topmost first).
 
 ## Playwright MCP notes (spike)
 
@@ -210,3 +212,83 @@ coordinate, text?)`, `mouse_move(coordinate)`, `left_mouse_down()`, `left_mouse_
   resumed without re-initialising. Shutdown never removes desktops.
 - **CLI auth:** the manager writes `<data>/admin.json` (`{url, token}`, mode 0600, rotated each start); the CLI uses it
   when run inside the manager container. Agent API tokens cannot manage tokens or login links.
+
+## Beyond pixels implementation notes (phase 3)
+
+**browser_\*** (`packages/mcp/src/browser.ts` generic forwarding + curation, `packages/manager/src/browser.ts` Playwright side)
+- `@playwright/mcp` **0.0.83** (pinned exactly, with the `playwright-core` version it uses, `1.64.0-alpha-1790635538000`,
+  imported directly). One connection per desktop, created on the first `browser_*` call: playwright-core
+  `connectOverCDP("<daemon>/cdp", {headers: Bearer key, noDefaults: true})`, its default context handed to
+  `createConnection(config, contextGetter)`, an in-process MCP client over `InMemoryTransport`. Kept for the desktop's
+  lifetime (refs stay valid); disposed on the desktop's `stopped`/`removed` events, when its container start time
+  changes (restart), on manager shutdown and after a call timeout. Disposal only disconnects: Chromium keeps running
+  (checked across a manager restart). If Chromium was closed or crashed, the next call re-attaches (the daemon relaunches
+  it) and the result says earlier refs are gone. Calls are serialised per desktop.
+- `noDefaults: true` keeps Playwright from overriding download behaviour and emulation on the user's existing pages:
+  downloads land in the desktop's `~/Downloads` (tested). `webmcp: false` (page-registered tools would be an injection
+  vector). `allowUnrestrictedFileAccess: true` so `file://` pages inside the desktop open; manager-side file access is
+  closed separately (below).
+- **Foreground tab:** before every call (except `browser_handle_dialog`) the manager evaluates
+  `document.visibilityState`/`hasFocus()` in each page (700 ms cap per page) and, if the visible page is not the one it
+  last made current, calls `browser_tabs {action:"select", index}`. Page indexes match because Playwright MCP tracks the
+  same `BrowserContext`. Tabs opened or switched outside Playwright (the user, pixel `ctrl+1`, `chromium <url>`) are
+  followed (e2e).
+- **Snapshots:** in 0.0.83 action tools write their page snapshot to a file on the manager and return only a link.
+  `snapshot.mode: "none"` turns that off; agents call `browser_snapshot` (returned inline) when they need refs — the
+  instructions and descriptions say so. The only rewrite of forwarded results: Playwright's "New console entries:
+  <manager file>" line becomes a pointer to `browser_console_messages`.
+- **Curated set (19):** navigate, navigate_back, snapshot, find, click, type, fill_form, select_option, hover, drag,
+  press_key, handle_dialog, file_upload, wait_for, tabs, evaluate, console_messages, network_requests,
+  network_request. Each gets the optional `desktop` argument; `filename` parameters are stripped from every schema (they
+  write to the manager's disk) and unknown parameters are refused. `browser_file_upload` `paths` are **desktop** paths:
+  the files are read through the daemon (as `agent`) into a per-call temp dir on the manager. Every upstream tool must
+  be curated or listed in `BROWSER_EXCLUDED` with a reason; the contract test
+  (`packages/manager/test/browser-contract.test.ts`, snapshot `test/__contract__/browser-tools.json`) fails otherwise.
+- **Excluded:** `browser_close` (closes the shared browser the user watches), `browser_resize` (window is maximised to
+  the desktop), `browser_take_screenshot` (duplicates screenshot/zoom; writes files on the manager), `browser_install`,
+  `browser_run_code_unsafe` (arbitrary JS **in the manager process**, which holds the Docker socket), `browser_emulate_media`
+  (changes the user's view), `browser_drop` (paths on the manager's disk), `browser_pdf_save` (writes on the manager).
+  Optional capabilities (vision/xy, storage/cookies, network routes, tracing/video, devtools, testing) are not enabled.
+- **Through ToolRegistry:** `scope: "desktop"`, `input: true`; element-acting tools (click, type, fill_form,
+  select_option, hover, drag, press_key) are `screenDependent`, so after a change of control they are not performed and
+  the hand-back note plus a screenshot come back instead; navigation, tabs, snapshot, evaluate still run (with the
+  note). Because the daemon does not gate CDP, the handler polls `/state`: while locked it waits up to
+  `DESKHAND_LOCK_WAIT` (default 30 s, like the daemon's input wait) and then fails `locked_by_user`; if the generation
+  moved meanwhile it fails `control_changed` (same handling as pixel input). A call that times out (90 s) or whose
+  connection breaks is `outcome_unknown` if it can act (`timeout` for read-only tools). Every call is logged with a
+  summary (`browser_type "Email" ← "a@b.c" ⏎`); action tools store a screenshot with the entry. Gap: a takeover that
+  starts while a browser call is already running does not interrupt it (the window is that call's duration).
+- Config: `DESKHAND_BROWSER_TOOLS` (default on), `DESKHAND_LOCK_WAIT` (30s). Playwright's output dir is
+  `<data>/playwright/<desktop>`.
+
+**ui_tree** (`packages/daemon/helpers/uitree.py`, formatting in `packages/mcp/src/uitree.ts`)
+- The helper matches AT-SPI windows to X windows (`wmctrl -lp`, `_NET_CLIENT_LIST_STACKING`, `_NET_ACTIVE_WINDOW`; by
+  pid+title, then title, then pid): windows come topmost first with `z`; only the window with the X focus is `active`
+  (AT-SPI's own flag goes stale); minimised windows are marked and not walked; unknown override-redirect windows are
+  `popup`; unnamed empty frames (Chromium's hidden omnibox popups) are dropped. Elements get `value` (Text/Value
+  interfaces: editable text, entries, sliders; 300 chars) and `description` when unnamed (Qt tooltips such as
+  "Next (F3)"); text duplicating its parent's name is dropped. Budgets: 2500 nodes per window, 4000 total (all to the
+  filtered window). `window` matches title **or app name**. Root `stack` lists every window (also filtered-out ones).
+- MCP output, one line per element: `button "Save" [disabled] @87,63 box=[71,48,32,31]`. `@x,y` is the centre of the
+  element's part that is on screen, inside its window and not covered by a window above it (from `stack`, so filtered
+  output is right too); if none, the line says "covered by window …; raise this window first" or "outside the visible
+  area". Unnamed layout wrappers are hoisted, toolbars/menus/lists/documents stay as headings. Capped at 24 000
+  characters with a note naming the windows to filter by. Chromium exposes only on-screen page elements as showing, so
+  page trees stay small; for web pages `browser_snapshot` is the better channel. ~0.3 s on three apps.
+- Verified on Chromium (form page: entries with values, radio buttons, checkbox, button), mousepad and pcmanfm (GTK 3)
+  and FeatherPad (Qt 6) — e2e and real agent runs.
+
+**desktop_exec** unchanged; verified: launches GTK/Qt apps with `&`, returns ~250 ms after `xclip` forks, a 2 s
+timeout kills the process group (no orphans), runs as `agent` (uid 1000) in the container (no daemon key, no Docker
+socket), cwd `~`.
+
+**Test pages:** `testpages/form.html` (contact form: text, email, select, radio, checkbox, textarea) submits by GET to
+`form-done.html`, which shows the values and keeps them in `window.deskhand.result` and localStorage; tests read the
+submitted values from Chromium's page URL inside the desktop (`curl 127.0.0.1:9222/json/list` via exec).
+
+**Tests:** `packages/mcp/test/uitree.test.ts` (formatter, real captured fixture), `packages/manager/test/takeover.test.ts`
+(three channels × lock/hand-back/generation, logging, unknown outcome; fake browser provider via
+`ManagerDeps.browser`), `browser-contract.test.ts`, and `test:e2e` (`packages/manager/test/e2e/phase3.e2e.test.ts`,
+real image: `DEV_DOCKER=1 scripts/dev env DESKHAND_E2E_IMAGE=deskhand-desktop:dev pnpm --filter @deskhand/manager
+test:e2e`). Test ports are configurable: `DESKHAND_TEST_PORTS=17400-17449 DESKHAND_FAKE_PORTS=17450-17499`.
+Reliability suite tasks: `suite/tasks/web-form.json`, `suite/tasks/native-edit-uitree.json`.
