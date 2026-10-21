@@ -24,7 +24,10 @@ RUN pnpm install --frozen-lockfile --filter "@deskhand/daemon..."
 COPY tsconfig.base.json ./
 COPY packages/shared packages/shared
 COPY packages/daemon packages/daemon
+COPY scripts/third-party-licenses.mjs scripts/
 RUN pnpm --filter @deskhand/shared build && pnpm --filter @deskhand/daemon bundle
+# The bundle drops node_modules, and with it each dependency's license file: collect them next to it.
+RUN mkdir -p /out && node scripts/third-party-licenses.mjs packages/daemon > /out/THIRD-PARTY-LICENSES.txt
 # Runtime dir: the bundle plus sharp (native, per-arch) installed with npm.
 RUN mkdir -p /out \
  && cp packages/daemon/dist/bundle/daemon.mjs packages/daemon/dist/bundle/daemon.mjs.map /out/ \

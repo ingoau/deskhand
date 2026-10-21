@@ -28,7 +28,11 @@ COPY packages/mcp packages/mcp
 COPY packages/manager packages/manager
 COPY packages/cli packages/cli
 COPY packages/dashboard packages/dashboard
+COPY scripts/third-party-licenses.mjs scripts/
 RUN pnpm --filter "@deskhand/manager..." --filter "@deskhand/cli..." --filter "@deskhand/dashboard" run build
+# The dashboard ships as a Vite bundle without node_modules: keep its dependencies' license texts with it
+# (served at <base>/THIRD-PARTY-LICENSES.txt).
+RUN node scripts/third-party-licenses.mjs packages/dashboard > packages/dashboard/dist/THIRD-PARTY-LICENSES.txt
 # Production node_modules only, then assemble /out/app with the workspace layout (pnpm's symlinks are relative).
 RUN rm -rf node_modules packages/*/node_modules \
  && pnpm install --frozen-lockfile --prod --filter "@deskhand/manager..." --filter "@deskhand/cli..." \
