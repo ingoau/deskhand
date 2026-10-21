@@ -1,4 +1,4 @@
-import type { DesktopSummary } from "@deskhand/shared";
+import type { DesktopSummary, TemplateHardware } from "@deskhand/shared";
 import { formatUptime, toMs } from "./format";
 
 /** What the dashboard shows for a desktop; drives the status dot colour and tile border. */
@@ -123,7 +123,32 @@ export function attentionList(desktops: DesktopSummary[]): DesktopSummary[] {
     .sort((a, b) => (toMs(a.attention!.since) ?? 0) - (toMs(b.attention!.since) ?? 0));
 }
 
-/** `base@v1 · t3/onboarding-vendors · 18m` */
-export function metaLine(d: DesktopSummary, now: number): string {
-  return [`${d.template}@v${d.templateVersion}`, d.session, uptimeLabel(d, now)].filter(Boolean).join(" · ");
+/** Short memory size as agents and the CLI write it: 8589934592 -> "8g", 1610612736 -> "1536m". */
+export function memLabel(bytes: number): string {
+  const gb = bytes / 1024 ** 3;
+  return Number.isInteger(gb) ? `${gb}g` : `${Math.round(bytes / 1024 ** 2)}m`;
+}
+
+/** Fallback when /api/system has not loaded yet (DESKHAND_DESKTOP_MEMORY default). */
+export const DEFAULT_DESKTOP_MEMORY = 2 * 1024 ** 3;
+
+/** Small hardware markers for tiles and the meta line: `kvm` and the memory cap when it isn't the default. */
+export function hardwareMarks(d: Pick<DesktopSummary, "hardware">, defaultMemoryBytes = DEFAULT_DESKTOP_MEMORY): string[] {
+  const hw = d.hardware;
+  if (!hw) return [];
+  const marks: string[] = [];
+  if (hw.kvm) marks.push("kvm");
+  if (hw.memoryBytes !== defaultMemoryBytes) marks.push(memLabel(hw.memoryBytes));
+  return marks;
+}
+
+/** A template's recorded hardware: `kvm · 8g · 4 cpu` ("" when it records none). */
+export function templateHardwareLabel(hw: TemplateHardware | null | undefined): string {
+  if (!hw) return "";
+  return [hw.kvm ? "kvm" : "", hw.memoryBytes ? memLabel(hw.memoryBytes) : "", hw.cpus ? `${hw.cpus} cpu` : ""].filter(Boolean).join(" · ");
+}
+
+/** `base@v1 · kvm · 8g · t3/onboarding-vendors · 18m` (hardware markers only when non-default). */
+export function metaLine(d: DesktopSummary, now: number, defaultMemoryBytes?: number): string {
+  return [`${d.template}@v${d.templateVersion}`, ...hardwareMarks(d, defaultMemoryBytes), d.session, uptimeLabel(d, now)].filter(Boolean).join(" · ");
 }

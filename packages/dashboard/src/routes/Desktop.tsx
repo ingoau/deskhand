@@ -15,7 +15,7 @@ import { displayState, displayTitle, lockIsLong, metaLine } from "../lib/desktop
 import { clock, formatBytes, formatUptime, screenLabel, since, toMs, until } from "../lib/format";
 import { KEYSYM, textToKeysyms } from "../lib/keysym";
 import { useMediaQuery, useNow } from "../lib/now";
-import { keys, useDesktop, useDesktopMutation, useHandBack, useRecentActions, useTakeOver } from "../lib/queries";
+import { keys, useDesktop, useDesktopMutation, useHandBack, useRecentActions, useSystem, useTakeOver } from "../lib/queries";
 import { useQueryClient } from "@tanstack/react-query";
 
 export function DesktopPage() {
@@ -79,6 +79,7 @@ function DesktopDetail({ desktop: d }: { desktop: DesktopSummary }) {
   const [upload, setUpload] = useState<File | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const lg = useMediaQuery("(min-width: 1024px)");
+  const { data: sys } = useSystem();
 
   // "take over →" from the attention banner arrives with state.takeover.
   const autoTook = useRef(false);
@@ -169,12 +170,13 @@ function DesktopDetail({ desktop: d }: { desktop: DesktopSummary }) {
             </span>
           </h1>
           <div className="mt-1 truncate pl-[17px] text-muted" data-testid="desktop-meta">
-            {metaLine(d, now)}
+            {metaLine(d, now, sys?.hardware?.defaultMemoryBytes)}
             <span className="hidden sm:inline">
               {" "}
               · {d.name}
               {d.cpuPercent != null ? ` · cpu ${Math.round(d.cpuPercent)}%` : ""}
               {d.memoryBytes != null ? ` · ${formatBytes(d.memoryBytes)}` : ""}
+              {d.hardware && d.hardware.cpus !== sys?.hardware?.defaultCpus ? ` · ${d.hardware.cpus} cpu` : ""}
               {d.persistent ? " · persistent" : ""}
             </span>
           </div>

@@ -214,6 +214,24 @@ test.describe("templates", () => {
     await expect(page.getByText("saved research v3")).toBeVisible({ timeout: 10_000 });
   });
 
+  test("new desktop with memory, cpus and kvm shows the markers", async ({ page, mobile }) => {
+    test.skip(mobile, "dialog flow is the same on phones");
+    await page.goto("./");
+    await page.getByTestId("new-desktop").first().click();
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByText("max 8g")).toBeVisible();
+    await dialog.getByLabel("memory").fill("8g");
+    await dialog.getByLabel("cpus").fill("4");
+    await dialog.getByRole("switch", { name: "kvm" }).click();
+    await dialog.getByLabel(/^title/).fill("android-emu");
+    await dialog.getByRole("button", { name: "start desktop" }).click();
+    await expect(page).toHaveURL(/\/desktops\/[0-9a-f]{4}$/);
+    await expect(page.getByTestId("desktop-meta")).toContainText("kvm · 8g");
+    await expect(page.getByTestId("desktop-meta")).toContainText("4 cpu");
+    await page.goto("./");
+    await expect(tiles(page, mobile).filter({ hasText: "android-emu" }).getByTestId("hw-marks")).toHaveText("kvm · 8g");
+  });
+
   test("edit starts a desktop from the template", async ({ page }) => {
     await page.goto("templates/vendor-portals");
     await page.getByRole("button", { name: "edit" }).click();

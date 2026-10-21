@@ -1,6 +1,7 @@
 import { Link } from "react-router";
 import type { DesktopSummary } from "@deskhand/shared";
-import { displayState, displayTitle, lockIsLong, statusLine, uptimeLabel } from "../lib/desktop";
+import { displayState, displayTitle, hardwareMarks, lockIsLong, memLabel, statusLine, uptimeLabel } from "../lib/desktop";
+import { useSystem } from "../lib/queries";
 import { formatBytes } from "../lib/format";
 import { cn } from "../lib/cn";
 import { useNow } from "../lib/now";
@@ -11,7 +12,20 @@ function usageTitle(d: DesktopSummary) {
   const parts = [d.name, d.session, `${d.template}@v${d.templateVersion}`];
   if (d.cpuPercent != null) parts.push(`cpu ${Math.round(d.cpuPercent)}%`);
   if (d.memoryBytes != null) parts.push(`mem ${formatBytes(d.memoryBytes)}`);
+  if (d.hardware) parts.push(`cap ${memLabel(d.hardware.memoryBytes)} · ${d.hardware.cpus} cpu${d.hardware.kvm ? " · kvm" : ""}`);
   return parts.filter(Boolean).join(" · ");
+}
+
+/** `kvm · 8g` next to the title when the desktop has KVM or a non-default memory cap. */
+function HardwareMarks({ d }: { d: DesktopSummary }) {
+  const { data: sys } = useSystem();
+  const marks = hardwareMarks(d, sys?.hardware?.defaultMemoryBytes);
+  if (!marks.length) return null;
+  return (
+    <span className="shrink-0 text-2xs text-faint" data-testid="hw-marks">
+      {marks.join(" · ")}
+    </span>
+  );
 }
 
 /** Second line; a long-held lock gets a warning (plan: ~30 min; never released automatically). */
@@ -47,6 +61,7 @@ export function DesktopTile({ desktop: d }: { desktop: DesktopSummary }) {
       <div className="mt-[9px] flex items-center gap-[9px] px-[2px]">
         <StatusDot state={state} pulse={state === "control" && lockIsLong(d, now)} />
         <span className={cn("truncate font-medium", state === "stopped" ? "text-muted" : "text-fg")}>{displayTitle(d)}</span>
+        <HardwareMarks d={d} />
         <span className="ml-auto shrink-0 tabular-nums text-muted">{uptimeLabel(d, now)}</span>
       </div>
       <div className="mt-[3px] truncate pl-[17px] text-muted">
@@ -69,6 +84,7 @@ export function DesktopRow({ desktop: d }: { desktop: DesktopSummary }) {
         <div className="flex items-center gap-[9px]">
           <StatusDot state={state} pulse={state === "control" && lockIsLong(d, now)} />
           <span className={cn("truncate font-medium", state === "stopped" ? "text-muted" : "text-fg")}>{displayTitle(d)}</span>
+          <HardwareMarks d={d} />
           <span className="ml-auto shrink-0 pl-2 tabular-nums text-muted">{uptimeLabel(d, now)}</span>
         </div>
         <div className="mt-[3px] truncate pl-[15px] text-muted">
