@@ -20,6 +20,8 @@ export const ERROR_CODES = [
   "unauthorized",
   "forbidden",
   "internal",
+  "desktop_stopped",
+  "not_found",
 ] as const;
 
 export type ErrorCode = (typeof ERROR_CODES)[number];
@@ -43,6 +45,8 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   unauthorized: "Missing or invalid deskhand credentials.",
   forbidden: "This request is not allowed.",
   internal: "deskhand hit an internal error; try again, and ask the user to check the deskhand logs if it repeats.",
+  desktop_stopped: "That desktop is stopped. Start it again (any tool call on it restarts it) and retry.",
+  not_found: "Not found.",
 };
 
 /** HTTP status used when an error crosses an HTTP boundary. */
@@ -64,6 +68,8 @@ export const ERROR_STATUS: Record<ErrorCode, number> = {
   unauthorized: 401,
   forbidden: 403,
   internal: 500,
+  desktop_stopped: 409,
+  not_found: 404,
 };
 
 export interface ErrorBody {

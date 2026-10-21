@@ -1,0 +1,192 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { DEFAULT_PORT, DESKHAND_VERSION } from "@deskhand/shared";
+import { normalizeBasePath, parseBytes, parseDuration } from "./util.js";
+
+export interface Config {
+  version: string;
+  maxDesktops: number;
+  /** Absolute bytes, or a fraction of host memory resolved at startup. */
+  memoryBudget: { bytes: number } | { fraction: number };
+  desktopMemoryBytes: number;
+  desktopCpus: number;
+  idleTimeoutMs: number;
+  stoppedRetentionMs: number;
+  /** MCP sessions without requests for this long are ended (their ephemeral desktops removed). */
+  sessionTimeoutMs: number;
+  logRetentionMs: number;
+  /** Thumbnails and log rows of removed desktops are deleted after this. */
+  logThumbRetentionMs: number;
+  templateVersions: number;
+  bind: { host: string; port: number };
+  basePath: string;
+  auth: boolean;
+  /** Public origin + base, used in printed login links, e.g. https://desk.example.ts.net */
+  publicUrl: string | null;
+  tz: string | null;
+  lang: string | null;
+  dataDir: string;
+  desktopImage: string;
+  network: string;
+  mountAllow: string[];
+  mountDeny: string[];
+  /** Host paths of the Docker socket (always refused as mounts, with their ancestors). */
+  dockerSocketPaths: string[];
+  ownerLabel: string;
+  instance: string | null;
+  containerPrefix: string;
+  runtime: "docker" | "fake";
+  dashboardDir: string | null;
+  screenshot: { maxBytes: number; jpegQuality: number; minJpegQuality: number };
+  requestHumanTimeoutMs: number;
+  healthIntervalMs: number;
+  unhealthyAfterMs: number;
+  sweepIntervalMs: number;
+  statsIntervalMs: number;
+  startTimeoutMs: number;
+  helperImage: string;
+  agentUid: number;
+  agentGid: number;
+  screen: { width: number; height: number };
+  fileMaxBytes: number;
+  /** Trust X-Forwarded-Proto/Host from a reverse proxy. */
+  trustProxy: boolean;
+  logLevel: string;
+}
+
+type Env = Record<string, string | undefined>;
+
+function list(v: string | undefined): string[] {
+  if (!v) return [];
+  return v
+    .split(/[,\n]/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => {
+      if (!s.startsWith("/")) throw new Error(`mount allow/deny entries must be absolute paths: "${s}"`);
+      return path.posix.normalize(s).replace(/(.)\/$/, "$1");
+    });
+}
+
+function bool(v: string | undefined, dflt: boolean, name: string): boolean {
+  if (v === undefined || v === "") return dflt;
+  const s = v.trim().toLowerCase();
+  if (["1", "on", "true", "yes"].includes(s)) return true;
+  if (["0", "off", "false", "no"].includes(s)) return false;
+  throw new Error(`${name} must be on or off, got "${v}"`);
+}
+
+function int(v: string | undefined, dflt: number, name: string, min = 0): number {
+  if (v === undefined || v === "") return dflt;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < min) throw new Error(`${name} must be an integer >= ${min}, got "${v}"`);
+  return n;
+}
+
+function dur(v: string | undefined, dflt: string, name: string): number {
+  try {
+    return parseDuration(v && v.trim() ? v : dflt);
+  } catch {
+    throw new Error(`${name} must be a duration like 30m, 24h or 7d, got "${v}"`);
+  }
+}
+
+export function parseBind(v: string | undefined): { host: string; port: number } {
+  const s = (v ?? "").trim();
+  if (!s) return { host: "127.0.0.1", port: DEFAULT_PORT };
+  if (/^\d+$/.test(s)) return { host: "127.0.0.1", port: Number(s) };
+  const m = /^(?:\[([^\]]+)\]|([^:]*)):(\d+)$/.exec(s);
+  if (!m) throw new Error(`DESKHAND_BIND must look like 127.0.0.1:7480, got "${v}"`);
+  return { host: m[1] ?? (m[2] || "0.0.0.0"), port: Number(m[3]) };
+}
+
+function defaultDashboardDir(): string {
+  // packages/manager/{src,dist}/config.* -> packages/dashboard/dist
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  return path.resolve(here, "../../dashboard/dist");
+}
+
+export function parseConfig(env: Env = process.env): Config {
+  const memBudget = (env.DESKHAND_MEMORY_BUDGET ?? "").trim();
+  let memoryBudget: Config["memoryBudget"] = { fraction: 0.8 };
+  if (memBudget) {
+    const pct = /^(\d+(?:\.\d+)?)%$/.exec(memBudget);
+    if (pct) memoryBudget = { fraction: Number(pct[1]) / 100 };
+    else {
+      try {
+        memoryBudget = { bytes: parseBytes(memBudget) };
+      } catch {
+        throw new Error(`DESKHAND_MEMORY_BUDGET must be a size like 24g or a percentage like 80%, got "${memBudget}"`);
+      }
+    }
+  }
+  let desktopMemoryBytes: number;
+  try {
+    desktopMemoryBytes = parseBytes(env.DESKHAND_DESKTOP_MEMORY || "2g");
+  } catch {
+    throw new Error(`DESKHAND_DESKTOP_MEMORY must be a size like 2g, got "${env.DESKHAND_DESKTOP_MEMORY}"`);
+  }
+  const desktopCpus = Number(env.DESKHAND_DESKTOP_CPUS || "1.5");
+  if (!(desktopCpus > 0)) throw new Error(`DESKHAND_DESKTOP_CPUS must be a positive number, got "${env.DESKHAND_DESKTOP_CPUS}"`);
+  const screenM = /^(\d+)x(\d+)$/.exec(env.DESKHAND_SCREEN || "1280x800");
+  if (!screenM) throw new Error(`DESKHAND_SCREEN must look like 1280x800`);
+  const runtime = (env.DESKHAND_RUNTIME || "docker") as Config["runtime"];
+  if (runtime !== "docker" && runtime !== "fake") throw new Error(`DESKHAND_RUNTIME must be docker or fake`);
+  const idleTimeoutMs = dur(env.DESKHAND_IDLE_TIMEOUT, "30m", "DESKHAND_IDLE_TIMEOUT");
+  const stoppedRetentionMs = dur(env.DESKHAND_STOPPED_RETENTION, "24h", "DESKHAND_STOPPED_RETENTION");
+  const dashboardDir = env.DESKHAND_DASHBOARD_DIR === "" ? null : (env.DESKHAND_DASHBOARD_DIR ?? defaultDashboardDir());
+  const publicUrl = env.DESKHAND_PUBLIC_URL ? env.DESKHAND_PUBLIC_URL.replace(/\/+$/, "") : null;
+  if (publicUrl && !/^https?:\/\//.test(publicUrl)) throw new Error("DESKHAND_PUBLIC_URL must start with http:// or https://");
+  return {
+    version: DESKHAND_VERSION,
+    maxDesktops: int(env.DESKHAND_MAX_DESKTOPS, 8, "DESKHAND_MAX_DESKTOPS", 1),
+    memoryBudget,
+    desktopMemoryBytes,
+    desktopCpus,
+    idleTimeoutMs,
+    stoppedRetentionMs,
+    sessionTimeoutMs: dur(env.DESKHAND_SESSION_TIMEOUT, "24h", "DESKHAND_SESSION_TIMEOUT"),
+    logRetentionMs: dur(env.DESKHAND_LOG_RETENTION, "7d", "DESKHAND_LOG_RETENTION"),
+    logThumbRetentionMs: dur(env.DESKHAND_LOG_THUMB_RETENTION, "30d", "DESKHAND_LOG_THUMB_RETENTION"),
+    templateVersions: int(env.DESKHAND_TEMPLATE_VERSIONS, 5, "DESKHAND_TEMPLATE_VERSIONS", 1),
+    bind: parseBind(env.DESKHAND_BIND),
+    basePath: normalizeBasePath(env.DESKHAND_BASE_PATH),
+    auth: bool(env.DESKHAND_AUTH, true, "DESKHAND_AUTH"),
+    publicUrl,
+    tz: env.TZ || null,
+    lang: env.LANG || null,
+    dataDir: env.DESKHAND_DATA_DIR || "/data",
+    desktopImage: env.DESKHAND_DESKTOP_IMAGE || `ghcr.io/ingoau/deskhand-desktop:${DESKHAND_VERSION}`,
+    network: env.DESKHAND_NETWORK || "deskhand-desktops",
+    mountAllow: list(env.DESKHAND_MOUNT_ALLOW),
+    mountDeny: list(env.DESKHAND_MOUNT_DENY),
+    dockerSocketPaths: list(env.DESKHAND_DOCKER_SOCKET_PATHS || "/var/run/docker.sock,/run/docker.sock"),
+    ownerLabel: env.DESKHAND_OWNER_LABEL || "deskhand",
+    instance: env.DESKHAND_INSTANCE || null,
+    containerPrefix: env.DESKHAND_CONTAINER_PREFIX || "deskhand-",
+    runtime,
+    dashboardDir,
+    screenshot: {
+      maxBytes: parseBytes(env.DESKHAND_SCREENSHOT_MAX_BYTES || "72k"),
+      jpegQuality: int(env.DESKHAND_SCREENSHOT_QUALITY, 80, "DESKHAND_SCREENSHOT_QUALITY", 1),
+      minJpegQuality: 30,
+    },
+    requestHumanTimeoutMs: dur(env.DESKHAND_REQUEST_HUMAN_TIMEOUT, "10m", "DESKHAND_REQUEST_HUMAN_TIMEOUT"),
+    healthIntervalMs: dur(env.DESKHAND_HEALTH_INTERVAL, "5s", "DESKHAND_HEALTH_INTERVAL"),
+    unhealthyAfterMs: dur(env.DESKHAND_UNHEALTHY_AFTER, "60s", "DESKHAND_UNHEALTHY_AFTER"),
+    sweepIntervalMs: dur(env.DESKHAND_SWEEP_INTERVAL, "15s", "DESKHAND_SWEEP_INTERVAL"),
+    statsIntervalMs: dur(env.DESKHAND_STATS_INTERVAL, "5s", "DESKHAND_STATS_INTERVAL"),
+    startTimeoutMs: dur(env.DESKHAND_START_TIMEOUT, "60s", "DESKHAND_START_TIMEOUT"),
+    helperImage: env.DESKHAND_HELPER_IMAGE || "busybox:1.37",
+    agentUid: int(env.DESKHAND_AGENT_UID, 1000, "DESKHAND_AGENT_UID"),
+    agentGid: int(env.DESKHAND_AGENT_GID, 1000, "DESKHAND_AGENT_GID"),
+    screen: { width: Number(screenM[1]), height: Number(screenM[2]) },
+    fileMaxBytes: parseBytes(env.DESKHAND_FILE_MAX_BYTES || "512m"),
+    trustProxy: bool(env.DESKHAND_TRUST_PROXY, true, "DESKHAND_TRUST_PROXY"),
+    logLevel: env.DESKHAND_LOG_LEVEL || "info",
+  };
+}
+
+export function resolveMemoryBudget(cfg: Config, hostMemBytes: number): number {
+  return "bytes" in cfg.memoryBudget ? cfg.memoryBudget.bytes : Math.floor(hostMemBytes * cfg.memoryBudget.fraction);
+}

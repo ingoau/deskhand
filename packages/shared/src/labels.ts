@@ -11,4 +11,6 @@ export const LABELS = {
   created: "deskhand.created",
   persistent: "deskhand.persistent",
   kind: "deskhand.kind", // "desktop" | "template" | "helper"
+  /** Optional: scopes a manager instance's resources (tests run several managers side by side). */
+  instance: "deskhand.instance",
 } as const;

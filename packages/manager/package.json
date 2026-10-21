@@ -1,0 +1,40 @@
+{
+  "name": "@deskhand/manager",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": { "deskhand-manager": "./dist/main.js" },
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/main.js",
+    "test": "vitest run --exclude 'test/docker/**'",
+    "test:docker": "vitest run test/docker"
+  },
+  "dependencies": {
+    "@deskhand/mcp": "workspace:*",
+    "@deskhand/shared": "workspace:*",
+    "@fastify/cookie": "^11.1.3",
+    "@fastify/multipart": "^10.1.4",
+    "@fastify/static": "^10.1.6",
+    "@fastify/websocket": "^11.3.4",
+    "better-sqlite3": "^13.0.3",
+    "dockerode": "^5.0.1",
+    "fastify": "^5.12.7",
+    "pino": "^10.4.0",
+    "sharp": "^0.35.5",
+    "tar-stream": "^3.2.2",
+    "ws": "^8.22.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/dockerode": "^4.0.2",
+    "@types/tar-stream": "^3.1.5",
+    "@types/ws": "^8.18.2"
+  }
+}
