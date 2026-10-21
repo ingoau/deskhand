@@ -35,8 +35,11 @@ Access
 Templates
   template ls                       List templates
   template info <name>              Show a template's description and versions
-  template rollback <name> <ver>    Point a template back at an earlier version
+  template rollback <name> [ver]    Point a template back at an earlier version (default: the previous one)
   template edit <name>              Start a persistent desktop from a template to change it
+  template rebuild <name>           Replay the recipe on the current base image (new version)
+  template recipe <name> [file|-]   Show, or set from a file / stdin (--clear removes it)
+  template diff <name> [from] [to]  What changed between two versions
   build                             Build the desktop image locally (not available yet)
 
 Credentials: --token/--url, DESKHAND_TOKEN/DESKHAND_URL, or <DESKHAND_DATA_DIR>/admin.json
@@ -135,6 +138,52 @@ interface Desktop {
   createdAt: string;
   cpuPercent: number | null;
   memoryBytes: number | null;
+}
+
+interface TemplateRow {
+  name: string;
+  currentVersion: number;
+  latestVersion: number;
+  isDefault: boolean;
+  stale: boolean;
+  staleReason?: string | null;
+  outdatedBase: boolean;
+  recentlyChangedByAgent: boolean;
+  loggedInSites: string[];
+  extensions?: string[];
+  baseVersion?: string;
+  currentBaseVersion?: string;
+  hasRecipe?: boolean;
+  lastFeedback: { kind: string; note: string; at: string; version: number } | null;
+  lastConfirmedAt: string | null;
+  rebuild?: { status: string; at: string; error: string | null } | null;
+  description: { summary: string; use_when: string; not_for?: string; setup_notes?: string; tags?: string[] };
+}
+
+interface VersionRow {
+  version: number;
+  createdAt: string;
+  savedBy: string | null;
+  byAgent: boolean;
+  rebuiltFrom?: number | null;
+  loggedInSites: string[];
+  packages: string[];
+  inUse: number;
+}
+
+type Changes = Record<string, unknown>;
+
+function flags(t: TemplateRow): string {
+  return [
+    t.isDefault ? "default" : "",
+    t.stale ? "stale" : "",
+    t.outdatedBase ? "outdated-base" : "",
+    t.recentlyChangedByAgent ? "changed-by-agent" : "",
+    t.hasRecipe ? "recipe" : "",
+    t.rebuild && t.rebuild.status !== "ok" ? `rebuild-${t.rebuild.status}` : "",
+  ]
+    .filter(Boolean)
+    .join(",");
 }
 
 export async function run(argv: string[], io: Io): Promise<number> {
@@ -240,31 +289,91 @@ export async function run(argv: string[], io: Io): Promise<number> {
       }
       case "template": {
         if (sub === "ls") {
-          const { templates } = await json<{ templates: Array<{ name: string; currentVersion: number; latestVersion: number; isDefault: boolean; stale: boolean; description: { summary: string } }> }>(
-            creds,
-            "GET",
-            "/api/templates",
-          );
+          const { templates } = await json<{ templates: TemplateRow[] }>(creds, "GET", "/api/templates");
           if (values.json) out(JSON.stringify(templates, null, 2) + "\n");
           else
             out(
               table([
-                ["NAME", "VERSION", "FLAGS", "SUMMARY"],
-                ...templates.map((t) => [t.name, t.currentVersion === t.latestVersion ? `v${t.currentVersion}` : `v${t.currentVersion} (latest v${t.latestVersion})`, [t.isDefault ? "default" : "", t.stale ? "stale" : ""].filter(Boolean).join(",") || "-", t.description.summary]),
+                ["NAME", "VERSION", "FLAGS", "LOGGED IN", "SUMMARY"],
+                ...templates.map((t) => [
+                  t.name,
+                  t.currentVersion === t.latestVersion ? `v${t.currentVersion}` : `v${t.currentVersion} (latest v${t.latestVersion})`,
+                  flags(t) || "-",
+                  t.loggedInSites.join(",") || "-",
+                  t.description.summary,
+                ]),
               ]),
             );
           return 0;
         }
         if (sub === "info") {
-          const t = await json<unknown>(creds, "GET", `/api/templates/${encodeURIComponent(need(a1, "template name"))}`);
-          out(JSON.stringify(t, null, 2) + "\n");
+          const t = await json<TemplateRow & { versions: VersionRow[]; recipe: string | null }>(creds, "GET", `/api/templates/${encodeURIComponent(need(a1, "template name"))}`);
+          if (values.json) {
+            out(JSON.stringify(t, null, 2) + "\n");
+            return 0;
+          }
+          const d = t.description;
+          const lines = [
+            `${t.name}  v${t.currentVersion}${t.currentVersion !== t.latestVersion ? ` (latest v${t.latestVersion})` : ""}  ${flags(t)}`,
+            `summary:     ${d.summary}`,
+            `use when:    ${d.use_when}`,
+            ...(d.not_for ? [`not for:     ${d.not_for}`] : []),
+            ...(d.setup_notes ? [`setup notes: ${d.setup_notes}`] : []),
+            ...(d.tags?.length ? [`tags:        ${d.tags.join(", ")}`] : []),
+            `logged in:   ${t.loggedInSites.join(", ") || "-"}`,
+            `extensions:  ${t.extensions?.join(", ") || "-"}`,
+            `base:        ${t.baseVersion ?? "-"}${t.outdatedBase ? `  (outdated; current base ${t.currentBaseVersion})` : ""}`,
+            `recipe:      ${t.recipe ? `${t.recipe.split("\n").length} lines` : "none"}${t.rebuild ? `  (last rebuild ${t.rebuild.status} ${ago(t.rebuild.at)} ago${t.rebuild.error ? `: ${t.rebuild.error.split("\n")[0]}` : ""})` : ""}`,
+            `feedback:    ${t.lastFeedback ? `${t.lastFeedback.kind} on v${t.lastFeedback.version} ${ago(t.lastFeedback.at)} ago: ${t.lastFeedback.note}` : "-"}  (last confirmed ${t.lastConfirmedAt ? `${ago(t.lastConfirmedAt)} ago` : "never"})`,
+            "",
+            "versions:",
+            ...t.versions.map(
+              (v) =>
+                `  v${v.version}${v.version === t.currentVersion ? "*" : " "} ${v.createdAt.slice(0, 16).replace("T", " ")}  by ${v.savedBy ?? "-"}${v.byAgent ? " (agent)" : ""}${v.rebuiltFrom ? ` rebuilt from v${v.rebuiltFrom}` : ""}  sites: ${v.loggedInSites.join(",") || "-"}  packages: ${v.packages.length}  in use: ${v.inUse}`,
+            ),
+          ];
+          out(lines.join("\n") + "\n");
           return 0;
         }
         if (sub === "rollback") {
-          const version = Number(need(a2, "version").replace(/^v/, ""));
-          if (!Number.isInteger(version)) throw new CliError("version must be a number, e.g. 3 or v3");
-          await json(creds, "POST", `/api/templates/${encodeURIComponent(need(a1, "template name"))}/rollback`, { version });
-          out(`${a1} now points at v${version}\n`);
+          const name = need(a1, "template name");
+          let body: { version?: number } = {};
+          if (a2) {
+            const version = Number(a2.replace(/^v/, ""));
+            if (!Number.isInteger(version)) throw new CliError("version must be a number, e.g. 3 or v3");
+            body = { version };
+          }
+          const t = await json<{ currentVersion: number }>(creds, "POST", `/api/templates/${encodeURIComponent(name)}/rollback`, body);
+          out(`${name} now points at v${t.currentVersion}\n`);
+          return 0;
+        }
+        if (sub === "rebuild") {
+          const name = need(a1, "template name");
+          io.stderr.write(`Rebuilding ${name} on the current base image (replays its recipe; can take minutes)…\n`);
+          const r = await json<{ version: number; template: TemplateRow }>(creds, "POST", `/api/templates/${encodeURIComponent(name)}/rebuild`);
+          out(`${name} rebuilt as v${r.version} (logged in: ${r.template.loggedInSites.join(", ") || "-"})\n`);
+          return 0;
+        }
+        if (sub === "recipe") {
+          const name = need(a1, "template name");
+          if (!a2) {
+            const t = await json<{ recipe: string | null }>(creds, "GET", `/api/templates/${encodeURIComponent(name)}`);
+            out(t.recipe ? (t.recipe.endsWith("\n") ? t.recipe : `${t.recipe}\n`) : "");
+            if (!t.recipe) io.stderr.write(`${name} has no recipe\n`);
+            return 0;
+          }
+          const recipe = a2 === "--clear" || a2 === "none" ? null : fs.readFileSync(a2 === "-" ? 0 : a2, "utf8");
+          await json(creds, "PUT", `/api/templates/${encodeURIComponent(name)}/recipe`, { recipe });
+          out(recipe ? `${name}: recipe updated (${recipe.split("\n").length} lines)\n` : `${name}: recipe removed\n`);
+          return 0;
+        }
+        if (sub === "diff") {
+          const name = need(a1, "template name");
+          const q = new URLSearchParams();
+          if (a2) q.set("from", a2.replace(/^v/, ""));
+          if (positionals[4]) q.set("to", positionals[4].replace(/^v/, ""));
+          const d = await json<Changes>(creds, "GET", `/api/templates/${encodeURIComponent(name)}/diff${q.size ? `?${q}` : ""}`);
+          out(JSON.stringify(d, null, 2) + "\n");
           return 0;
         }
         if (sub === "edit") {
@@ -276,7 +385,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
           );
           return 0;
         }
-        throw new CliError("usage: deskhand template ls | info <name> | rollback <name> <version> | edit <name>");
+        throw new CliError("usage: deskhand template ls | info <name> | rollback <name> [version] | edit <name> | rebuild <name> | recipe <name> [file|-|--clear] | diff <name> [from] [to]");
       }
       case "build":
         throw new CliError("`deskhand build` is not available yet; build the desktop image with docker build -f images/desktop/Dockerfile -t deskhand-desktop:dev . from the repo.");

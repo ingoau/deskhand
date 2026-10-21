@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { clearDir, touchesMount } from "../../src/quiesce.js";
+import { clearDir, coreDumps, touchesMount } from "../../src/quiesce.js";
 import { checkAuth } from "../../src/server.js";
 import { rewriteCdpBody } from "../../src/cdp.js";
 
@@ -31,6 +31,16 @@ describe("clearDir", () => {
     expect(readdirSync(join(d, "mounted"))).toEqual(["keep"]);
     expect(r.removed).toBe(2);
     expect(r.skipped).toEqual([join(d, "mounted")]);
+  });
+});
+
+describe("coreDumps", () => {
+  it("finds core files of crashed apps but not similarly named dirs, other files or mounts", () => {
+    const d = mkdtempSync(join(tmpdir(), "deskhand-core-"));
+    for (const f of ["core", "core.274", "core.txt", "score.1"]) writeFileSync(join(d, f), "x");
+    mkdirSync(join(d, "core.9"));
+    writeFileSync(join(d, "core.55"), "x");
+    expect(coreDumps(d, [join(d, "core.55")]).sort()).toEqual([join(d, "core"), join(d, "core.274")]);
   });
 });
 

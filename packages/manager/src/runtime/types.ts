@@ -47,6 +47,28 @@ export interface PathResolution {
   error?: string;
 }
 
+export interface ImageInfo {
+  id: string;
+  /** ISO timestamp. */
+  created: string;
+  labels: Record<string, string>;
+}
+
+export interface ExecOptions {
+  /** "root", "agent", "1000:1000"... (default root). */
+  user?: string;
+  env?: string[];
+  workdir?: string;
+  timeoutMs: number;
+}
+
+export interface ExecResult {
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+}
+
 export interface HostInfo {
   memTotalBytes: number;
   ncpu: number;
@@ -73,7 +95,19 @@ export interface Runtime {
   /** Writable-layer size per container id. */
   diskUsage(): Promise<Map<string, number>>;
   commit(containerId: string, opts: { repo: string; tag: string; labels: Record<string, string>; env: string[] }): Promise<{ image: string; sizeBytes: number | null }>;
-  removeImage(image: string): Promise<void>;
+  /** Removes an image; false when it is still used by a container (kept). */
+  removeImage(image: string): Promise<boolean | void>;
+  /** Image id, creation time and labels; null when the image does not exist. */
+  imageInfo(image: string): Promise<ImageInfo | null>;
+  /** Runs a command in a running container (docker exec), stdin closed. */
+  exec(containerId: string, cmd: string[], opts: ExecOptions): Promise<ExecResult>;
+  /** Writes one file into a container (archive API). */
+  writeFile(containerId: string, filePath: string, data: Buffer, opts: { uid: number; gid: number; mode: number }): Promise<void>;
+  /**
+   * Copies absolute paths from an image (through a created, never started container) into a
+   * container at the same paths. Paths missing in the image are skipped; returns the ones copied.
+   */
+  copyFromImage(image: string, paths: string[], containerId: string, beforeEach?: (path: string) => Promise<void>): Promise<string[]>;
   /** Resolves host paths through symlinks, as the Docker host sees them. */
   resolveHostPaths(paths: string[]): Promise<PathResolution[]>;
   readHostFile(resolvedPath: string, maxBytes: number): Promise<Buffer>;

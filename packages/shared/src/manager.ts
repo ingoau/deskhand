@@ -121,6 +121,22 @@ export const LogEntry = z.object({
 });
 export type LogEntry = z.infer<typeof LogEntry>;
 
+/** What changed in a version compared with the previous one still kept (computed by the manager). */
+export const TemplateListChange = z.object({ added: z.array(z.string()), removed: z.array(z.string()) });
+export type TemplateListChange = z.infer<typeof TemplateListChange>;
+export const TemplateChanges = z.object({
+  /** The version compared against (null for the first version). */
+  from: z.number().int().nullable(),
+  /** Description fields whose value changed. */
+  description: z.array(z.object({ field: z.string(), before: z.unknown(), after: z.unknown() })),
+  loggedInSites: TemplateListChange,
+  extensions: TemplateListChange,
+  packages: TemplateListChange,
+  recipeChanged: z.boolean(),
+  baseChanged: z.boolean(),
+});
+export type TemplateChanges = z.infer<typeof TemplateChanges>;
+
 export const TemplateVersion = z.object({
   version: z.number().int(),
   image: z.string(),
@@ -130,11 +146,25 @@ export const TemplateVersion = z.object({
   baseVersion: z.string(),
   hasRecipe: z.boolean(),
   description: z.lazy(() => TemplateDescription),
+  /** Registrable domains with persistent login-like cookies (Chromium and Firefox). Cookie values are never read. */
   loggedInSites: z.array(z.string()),
+  /** Browser extensions installed in the profile, e.g. "Refined GitHub 24.10.1" (Firefox ones are prefixed "Firefox: "). */
   extensions: z.array(z.string()),
+  /** Debian packages added compared with the base image, e.g. "jq 1.7.1+dfsg-1". */
   packages: z.array(z.string()),
   sizeBytes: z.number().nullable(),
   inUse: z.number().int(),
+  // ---- phase 4 additions (optional so older clients and mocks keep working)
+  /** Session label of the MCP session (or "dashboard") that saved it, and the desktop it came from. */
+  savedFrom: z.object({ desktop: z.string(), title: z.string().nullable(), session: z.string().nullable() }).nullable().optional(),
+  /** Set when this version was produced by replaying the recipe on a new base image. */
+  rebuiltFrom: z.number().int().nullable().optional(),
+  /** Notes from computing the manifest (e.g. "base package list not found"). */
+  manifestNotes: z.array(z.string()).optional(),
+  /** The recipe stored with this version (the current one is also TemplateDetail.recipe). */
+  recipe: z.string().nullable().optional(),
+  /** Diff against the previous kept version. */
+  changes: TemplateChanges.optional(),
 });
 export type TemplateVersion = z.infer<typeof TemplateVersion>;
 
@@ -153,6 +183,8 @@ export const TemplateFeedback = z.object({
   note: z.string(),
   by: z.string().nullable(),
   version: z.number().int(),
+  /** Session label of the reporting agent (phase 4). */
+  session: z.string().nullable().optional(),
 });
 export type TemplateFeedback = z.infer<typeof TemplateFeedback>;
 
@@ -171,6 +203,27 @@ export const TemplateSummary = z.object({
   stale: z.boolean(),
   outdatedBase: z.boolean(),
   isDefault: z.boolean(),
+  // ---- phase 4 additions (optional so older clients and mocks keep working)
+  /** Why the template is stale: "problem reported: …" or "not confirmed in 14 days". */
+  staleReason: z.string().nullable().optional(),
+  /** When an agent last saved a version (drives recentlyChangedByAgent, 24 h). */
+  changedByAgentAt: z.string().nullable().optional(),
+  hasRecipe: z.boolean().optional(),
+  /** Base image version the current version was built on, and the base the manager runs now. */
+  baseVersion: z.string().optional(),
+  currentBaseVersion: z.string().optional(),
+  extensions: z.array(z.string()).optional(),
+  /** Recipe replay on a new base image: last attempt. */
+  rebuild: z
+    .object({
+      status: z.enum(["queued", "running", "ok", "failed"]),
+      at: z.string(),
+      baseVersion: z.string(),
+      error: z.string().nullable(),
+      version: z.number().int().nullable(),
+    })
+    .nullable()
+    .optional(),
 });
 export type TemplateSummary = z.infer<typeof TemplateSummary>;
 

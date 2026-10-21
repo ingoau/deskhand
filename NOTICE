@@ -1,0 +1,35 @@
+deskhand
+Copyright 2026 The deskhand authors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The container images built from this repository bundle third-party software that keeps its own license.
+Every component must allow redistribution. Each Debian package's license text is shipped inside the image
+at /usr/share/doc/<package>/copyright, and npm dependencies carry their license files under node_modules.
+
+deskhand-desktop image (Debian packages, main component only)
+  Xvfb, xauth, x11-utils, x11-xserver-utils (X.Org)        MIT/X11
+  x11vnc                                                    GPL-2.0-or-later
+  openbox                                                   GPL-2.0-or-later
+  tint2                                                     GPL-2.0-only
+  xdotool, wmctrl, xclip                                    BSD-3-Clause / GPL-2.0-or-later / GPL-2.0-or-later
+  Chromium                                                  BSD-3-Clause and others
+  Firefox ESR                                               MPL-2.0
+  PCManFM                                                   GPL-2.0-or-later
+  Mousepad, Ristretto                                       GPL-2.0-or-later
+  FeatherPad                                                GPL-3.0-or-later
+  xterm                                                     MIT/X11
+  Adwaita icon theme, GNOME themes                          LGPL-3.0 / CC-BY-SA-3.0 / LGPL-2.1
+  Noto fonts (core, mono, CJK, color emoji)                 SIL Open Font License 1.1 / Apache-2.0
+  supervisor                                                BSD-derived (repoze)
+  D-Bus, AT-SPI2, PyGObject/pyatspi                         AFL-2.1 or GPL-2.0 / LGPL-2.1-or-later
+  Python 3                                                  PSF-2.0
+  Node.js                                                   MIT and bundled licenses
+  sharp / libvips                                           Apache-2.0 / LGPL-3.0-or-later
+
+deskhand manager image
+  Node.js                                                   MIT and bundled licenses
+  noVNC (@novnc/novnc, in the dashboard bundle)             MPL-2.0
+  JetBrains Mono (@fontsource/jetbrains-mono)               SIL Open Font License 1.1
+  Playwright MCP (@playwright/mcp), Playwright              Apache-2.0
+  Other npm dependencies                                    see each package's license file

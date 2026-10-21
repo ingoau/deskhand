@@ -25,7 +25,7 @@ const EXPECTED: Record<string, string[]> = {
   set_title: ["text"],
   template_list: [],
   template_info: ["name"],
-  template_save: ["name", "description", "recipe"],
+  template_save: ["name", "description", "confirm_description", "recipe"],
   template_feedback: ["result", "note"],
   request_human: ["reason"],
   file_put: ["host_path", "desktop_path"],
