@@ -153,7 +153,7 @@ export async function createManager(cfg: Config, deps: ManagerDeps = {}): Promis
       const port = (app.server.address() as { port: number }).port;
       const host = cfg.listen.host === "0.0.0.0" || cfg.listen.host === "::" ? "127.0.0.1" : cfg.listen.host;
       origin = `http://${host.includes(":") ? `[${host}]` : host}:${port}`;
-      auth.writeAdminCredential(`${origin}${cfg.basePath}`);
+      auth.writeAdminCredential(`${origin}${cfg.basePath}`, `${publicOrigin()}${cfg.basePath}`);
       const first = auth.initFirstStart();
       if (first.firstStart && cfg.auth) {
         const { code } = auth.createLoginCode();

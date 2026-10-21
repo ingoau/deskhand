@@ -47,18 +47,25 @@ class CliError extends Error {}
 interface Creds {
   url: string;
   token: string | null;
+  /** The address users reach (printed in hints); differs from url inside the compose container. */
+  publicUrl: string;
 }
 
 export function resolveCreds(flags: { url?: string; token?: string }, env: Io["env"]): Creds {
   const url = flags.url ?? env.DESKHAND_URL;
   const token = flags.token ?? env.DESKHAND_TOKEN;
-  if (token) return { url: (url ?? "http://127.0.0.1:7480").replace(/\/+$/, ""), token };
+  if (token) {
+    const u = (url ?? "http://127.0.0.1:7480").replace(/\/+$/, "");
+    return { url: u, token, publicUrl: u };
+  }
   const file = path.join(env.DESKHAND_DATA_DIR ?? "/data", "admin.json");
   try {
-    const admin = JSON.parse(fs.readFileSync(file, "utf8")) as { url: string; token: string };
-    return { url: (url ?? admin.url).replace(/\/+$/, ""), token: admin.token };
+    const admin = JSON.parse(fs.readFileSync(file, "utf8")) as { url: string; token: string; publicUrl?: string };
+    const u = (url ?? admin.url).replace(/\/+$/, "");
+    return { url: u, token: admin.token, publicUrl: url ? u : (admin.publicUrl ?? admin.url).replace(/\/+$/, "") };
   } catch {
-    return { url: (url ?? "http://127.0.0.1:7480").replace(/\/+$/, ""), token: null };
+    const u = (url ?? "http://127.0.0.1:7480").replace(/\/+$/, "");
+    return { url: u, token: null, publicUrl: u };
   }
 }
 
@@ -214,7 +221,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
           const r = await json<{ token: { name: string }; secret: string }>(creds, "POST", "/api/tokens", { name: need(a1, "token name") });
           out(`${r.secret}\n`);
           io.stderr.write(
-            `Token "${r.token.name}" created; it is shown only once.\nConnect an agent host:\n  claude mcp add --transport http deskhand ${creds.url}/mcp --header "Authorization: Bearer ${r.secret}"\n`,
+            `Token "${r.token.name}" created; it is shown only once.\nConnect an agent host:\n  claude mcp add --transport http deskhand ${creds.publicUrl}/mcp --header "Authorization: Bearer ${r.secret}"\n`,
           );
           return 0;
         }
@@ -265,7 +272,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
           const d = await json<Desktop>(creds, "POST", "/api/desktops", { template: name, name: `edit-${name}`, persistent: true });
           out(`${d.id}\n`);
           io.stderr.write(
-            `Started persistent desktop ${d.id} from template ${name}. Open it in the dashboard (${creds.url}/desktops/${d.id}), take over, make your changes, then use "Save as template" with the name "${name}" to save a new version. Remove it afterwards with: deskhand rm ${d.id}\n`,
+            `Started persistent desktop ${d.id} from template ${name}. Open it in the dashboard (${creds.publicUrl}/desktops/${d.id}), take over, make your changes, then use "Save as template" with the name "${name}" to save a new version. Remove it afterwards with: deskhand rm ${d.id}\n`,
           );
           return 0;
         }

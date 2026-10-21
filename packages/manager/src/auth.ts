@@ -264,13 +264,14 @@ export class AuthService {
 
   // ---------------------------------------------------------------- admin credential (CLI)
 
-  /** Writes {url, token} to <dataDir>/admin.json (0600). Rotated on every start. */
-  writeAdminCredential(url: string): string {
+  /** Writes {url, token, publicUrl} to <dataDir>/admin.json (0600). Rotated on every start. url is for the CLI next to the
+   * manager (in compose: the in-container listen address); publicUrl is what users reach (for printed hints). */
+  writeAdminCredential(url: string, publicUrl: string = url): string {
     this.adminSecret = "dha_" + secret(32);
     const file = path.join(this.opts.dataDir, "admin.json");
     fs.mkdirSync(this.opts.dataDir, { recursive: true });
     const tmp = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify({ url, token: this.adminSecret }) + "\n", { mode: 0o600 });
+    fs.writeFileSync(tmp, JSON.stringify({ url, publicUrl, token: this.adminSecret }) + "\n", { mode: 0o600 });
     fs.renameSync(tmp, file);
     return this.adminSecret;
   }
