@@ -25,7 +25,7 @@ import type { ActionLog } from "./actionlog.js";
 import { formatDuration, KeyedMutex, nowIso, randomId, secret, sleep } from "./util.js";
 
 export type StopReason = "idle" | "user" | "agent" | "exited" | "unhealthy" | "manager";
-export type RemoveReason = "agent" | "user" | "session_end" | "retention" | "missing" | "failed";
+export type RemoveReason = "agent" | "user" | "session_end" | "retention" | "missing" | "failed" | "template_build";
 
 export interface StoredMount extends Mount {
   source: string;

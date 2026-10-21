@@ -1,0 +1,80 @@
+{
+  "id": "templated-login",
+  "title": "Templated login: one agent saves a signed-in template, a second agent finds and reuses it",
+  "about": [
+    "Covers plan phase 4 (Templates). A first agent signs in to a local test shop with a cookie login and saves the desktop as a described template.",
+    "A second agent gets a task that needs the login but no password and no template name; it must pick the template from desktop_start's description (or template_list) and find itself already signed in.",
+    "Passes when every check below holds. Makes real model calls, so it runs on demand, not in CI."
+  ],
+  "phase": 4,
+  "fixtures": {
+    "shop": {
+      "about": "suite/fixtures/login-site/server.py: tiny shop, login alice / correct-horse, sets an HttpOnly shop_session cookie (30 days with 'Remember me'). GET /sessions counts logins.",
+      "image": "${DESKHAND_DESKTOP_IMAGE}",
+      "entrypoint": ["python3", "/site/server.py", "--port", "80"],
+      "mounts": [{ "source": "suite/fixtures/login-site", "target": "/site", "readOnly": true }],
+      "network": "${DESKHAND_NETWORK}",
+      "aliases": ["shop.deskhand.test"],
+      "labels": { "owner": "deskhand-dev" },
+      "ready": "GET http://shop.deskhand.test/whoami from a desktop, or GET http://127.0.0.1/whoami inside the container, answers 401"
+    }
+  },
+  "agents": [
+    {
+      "id": "setup",
+      "model": "claude-sonnet-5-5",
+      "allowedTools": ["mcp__deskhand__*"],
+      "timeoutMinutes": 15,
+      "prompt": "Use the deskhand desktop tools (an isolated Linux desktop). Set up a reusable desktop for future work in our Test Shop web app: open Chromium at http://shop.deskhand.test/ , sign in with username alice and password correct-horse (leave 'Remember me' ticked), and confirm the home page says 'Signed in as alice'. Then save this desktop as a deskhand template so that other agents doing Test Shop tasks later can start already signed in. Write a clear description. When done, stop the desktop and reply with the template name you saved."
+    },
+    {
+      "id": "reuse",
+      "model": "claude-sonnet-5-5",
+      "allowedTools": ["mcp__deskhand__*"],
+      "timeoutMinutes": 10,
+      "prompt": "Use the deskhand desktop tools (isolated Linux desktops). Task: find out which account is currently signed in to our Test Shop web app at http://shop.deskhand.test/ and what its home page says. You do not have the Test Shop password, so do not try to sign in. Report the exact status text from the home page, then stop your desktop."
+    }
+  ],
+  "checks": [
+    {
+      "id": "template-saved",
+      "after": "setup",
+      "expect": "GET /api/templates has a new template (not base) whose loggedInSites include deskhand.test, with a non-empty summary and use_when, saved by an agent",
+      "request": "GET /api/templates",
+      "assert": "body.templates.some(t => t.name !== 'base' && t.loggedInSites.includes('deskhand.test') && t.description.summary && t.description.use_when && t.recentlyChangedByAgent)"
+    },
+    {
+      "id": "one-login",
+      "after": "setup",
+      "expect": "the shop saw exactly one login so far",
+      "fixtureRequest": { "fixture": "shop", "request": "GET /sessions" },
+      "assert": "body.count === 1"
+    },
+    {
+      "id": "template-chosen",
+      "after": "reuse",
+      "expect": "the reuse agent called desktop_start with the template the setup agent saved (template name from the setup check), without being told its name",
+      "transcript": "reuse",
+      "assert": "toolCalls.some(c => c.name === 'mcp__deskhand__desktop_start' && c.input.template === saved.name)"
+    },
+    {
+      "id": "already-signed-in",
+      "after": "reuse",
+      "expect": "the reuse agent reports 'Signed in as alice' and the shop still counts one login (it never signed in itself)",
+      "assert": "finalText(reuse).includes('Signed in as alice') && fixture('shop', 'GET /sessions').count === 1"
+    },
+    {
+      "id": "feedback",
+      "after": "reuse",
+      "optional": true,
+      "expect": "the reuse agent left template_feedback ok on the template (encouraged by the tool descriptions, not required)",
+      "request": "GET /api/templates/{saved.name}",
+      "assert": "body.lastFeedback && body.lastFeedback.kind === 'ok'"
+    }
+  ],
+  "cleanup": ["DELETE /api/templates/{saved.name}", "remove the shop container"],
+  "reference_run": {
+    "date": "2026-10-21",
+    "result": "pass: setup saved test-shop-alice (sites deskhand.test) by clicking and typing; reuse called desktop_start(template=test-shop-alice) straight from the tool description, read 'Signed in as alice', left ok feedback; shop login count unchanged."
+  }
+}

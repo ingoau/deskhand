@@ -12,6 +12,7 @@ import type { MountPolicy } from "./mounts.js";
 import type { Runtime } from "./runtime/types.js";
 import { encodeForAgent } from "./images.js";
 import { formatDuration, nowIso } from "./util.js";
+import { saveDesktopAsTemplate } from "./template-ops.js";
 
 export function toRef(d: Desktop): DesktopRef {
   return {
@@ -68,6 +69,7 @@ export class ManagerMcpBackend implements McpBackend {
     private readonly actionLog: ActionLog,
     private readonly files: FileService,
     private readonly log: Logger,
+    private readonly runtime: Runtime,
   ) {
     this.version = cfg.version;
   }
@@ -293,14 +295,22 @@ export class ManagerMcpBackend implements McpBackend {
     return this.templates.info(name);
   }
 
-  async saveTemplate(session: SessionInfo, desktopId: string, input: { name: string; description: TemplateDescription; recipe?: string }) {
+  async saveTemplate(session: SessionInfo, desktopId: string, input: { name: string; description?: TemplateDescription; confirm_description?: boolean; recipe?: string }) {
     const d = this.desktops.require(desktopId);
-    return saveDesktopAsTemplate(this.desktops, this.templates, d, input, session.principal.name, true, this.log);
+    const r = await saveDesktopAsTemplate(
+      { cfg: this.cfg, desktops: this.desktops, templates: this.templates, runtime: this.runtime, log: this.log },
+      d,
+      input,
+      session.principal.name,
+      true,
+      sessionLabel(session),
+    );
+    return { ...r.template, notes: [...r.notes, ...r.manifest.notes] };
   }
 
   async templateFeedback(session: SessionInfo, desktopId: string, kind: "ok" | "problem", note: string) {
     const d = this.desktops.require(desktopId);
-    this.templates.feedback(d.template, d.templateVersion, kind, note, session.principal.name);
+    this.templates.feedback(d.template, d.templateVersion, kind, note, session.principal.name, sessionLabel(session));
     return { template: d.template, version: d.templateVersion };
   }
 
@@ -390,24 +400,4 @@ export class ManagerMcpBackend implements McpBackend {
   }
 }
 
-/** Quiesce + commit. Shared by template_save and the dashboard's save-as-template. */
-export async function saveDesktopAsTemplate(
-  desktops: DesktopService,
-  templates: TemplateService,
-  d: Desktop,
-  input: { name: string; description: TemplateDescription; recipe?: string },
-  savedBy: string,
-  byAgent: boolean,
-  log: Logger,
-) {
-  if (!d.containerId) throw new DeskhandError("desktop_stopped");
-  if (d.status === "running") {
-    try {
-      await desktops.daemon(d).quiesce();
-    } catch (e) {
-      if (!(e instanceof DeskhandError && e.code === "not_found")) throw e;
-      log.warn({ desktop: d.id }, "daemon has no /quiesce; saving without it");
-    }
-  }
-  return templates.save({ name: input.name, description: input.description, recipe: input.recipe, containerId: d.containerId, savedBy, byAgent });
-}
+export { saveDesktopAsTemplate } from "./template-ops.js";

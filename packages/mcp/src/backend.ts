@@ -114,7 +114,16 @@ export interface McpBackend {
 
   listTemplates(): TemplateSummary[];
   templateInfo(name: string): TemplateDetail;
-  saveTemplate(session: SessionInfo, desktopId: string, input: { name: string; description: TemplateDescription; recipe?: string }): Promise<TemplateSummary>;
+  /**
+   * Saves the desktop as a new template version. description is required for a new template; for a
+   * new version restate it or pass confirm_description to keep the previous one. notes: things the
+   * agent should know (apps were closed, manifest caveats).
+   */
+  saveTemplate(
+    session: SessionInfo,
+    desktopId: string,
+    input: { name: string; description?: TemplateDescription; confirm_description?: boolean; recipe?: string },
+  ): Promise<TemplateSummary & { notes?: string[] }>;
   templateFeedback(session: SessionInfo, desktopId: string, kind: "ok" | "problem", note: string): Promise<{ template: string; version: number }>;
   /** Subscribe to template changes (for notifications/tools/list_changed). Returns an unsubscribe. */
   onTemplatesChanged(cb: () => void): () => void;

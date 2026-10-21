@@ -18,6 +18,16 @@ export interface Config {
   /** Thumbnails and log rows of removed desktops are deleted after this. */
   logThumbRetentionMs: number;
   templateVersions: number;
+  /** Image repository for template versions (`<repo>:<name>-v<N>`). */
+  templateRepo: string;
+  /** A template not confirmed working (ok feedback) for this long is marked stale. */
+  templateStaleMs: number;
+  /** Home-relative paths carried from the old snapshot when a recipe-backed template is rebuilt. */
+  templateCarryPaths: string[];
+  /** Rebuild recipe-backed templates automatically when the desktop image changes. */
+  templateAutoRebuild: boolean;
+  /** Time limit for one recipe run during a rebuild. */
+  recipeTimeoutMs: number;
   bind: { host: string; port: number };
   basePath: string;
   auth: boolean;
@@ -100,6 +110,31 @@ export function parseBind(v: string | undefined): { host: string; port: number }
   return { host: m[1] ?? (m[2] || "0.0.0.0"), port: Number(m[3]) };
 }
 
+function templateRepo(v: string | undefined): string {
+  const s = (v ?? "").trim() || "deskhand-template";
+  if (!/^[a-z0-9]+(?:[._/-][a-z0-9]+)*$/.test(s)) throw new Error(`DESKHAND_TEMPLATE_REPO must be a lowercase image repository name, got "${v}"`);
+  return s;
+}
+
+/**
+ * What a rebuild carries over from the old snapshot (paths under the agent's home): browser
+ * profiles (cookies, local storage, saved sessions, extensions installed from the browser), the
+ * GNOME keyring and the NSS certificate store. Everything else comes from the new base + recipe.
+ */
+export const DEFAULT_CARRY_PATHS = [".config/chromium", ".mozilla", ".config/mozilla", ".local/share/keyrings", ".pki"];
+
+function carryPaths(v: string | undefined): string[] {
+  if (v === undefined || !v.trim()) return DEFAULT_CARRY_PATHS;
+  return v
+    .split(/[,\n]/)
+    .map((s) => s.trim().replace(/^~\//, "").replace(/\/+$/, ""))
+    .filter(Boolean)
+    .map((s) => {
+      if (s.startsWith("/") || s.split("/").includes("..")) throw new Error(`DESKHAND_TEMPLATE_CARRY entries are paths relative to the agent's home, got "${s}"`);
+      return s;
+    });
+}
+
 function defaultDashboardDir(): string {
   // packages/manager/{src,dist}/config.* -> packages/dashboard/dist
   const here = path.dirname(fileURLToPath(import.meta.url));
@@ -149,6 +184,11 @@ export function parseConfig(env: Env = process.env): Config {
     logRetentionMs: dur(env.DESKHAND_LOG_RETENTION, "7d", "DESKHAND_LOG_RETENTION"),
     logThumbRetentionMs: dur(env.DESKHAND_LOG_THUMB_RETENTION, "30d", "DESKHAND_LOG_THUMB_RETENTION"),
     templateVersions: int(env.DESKHAND_TEMPLATE_VERSIONS, 5, "DESKHAND_TEMPLATE_VERSIONS", 1),
+    templateRepo: templateRepo(env.DESKHAND_TEMPLATE_REPO),
+    templateStaleMs: dur(env.DESKHAND_TEMPLATE_STALE_AFTER, "14d", "DESKHAND_TEMPLATE_STALE_AFTER"),
+    templateCarryPaths: carryPaths(env.DESKHAND_TEMPLATE_CARRY),
+    templateAutoRebuild: bool(env.DESKHAND_TEMPLATE_AUTO_REBUILD, true, "DESKHAND_TEMPLATE_AUTO_REBUILD"),
+    recipeTimeoutMs: dur(env.DESKHAND_RECIPE_TIMEOUT, "20m", "DESKHAND_RECIPE_TIMEOUT"),
     bind: parseBind(env.DESKHAND_BIND),
     basePath: normalizeBasePath(env.DESKHAND_BASE_PATH),
     auth: bool(env.DESKHAND_AUTH, true, "DESKHAND_AUTH"),
