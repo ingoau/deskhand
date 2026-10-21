@@ -88,6 +88,30 @@ test.describe("takeover and hand back", () => {
     if (!DOCKER) expect((await fakeVncInputs(id)).length).toBe(before);
   });
 
+  test("clipboard is shared both ways while in control", async ({ page, agent }) => {
+    const a = await agent("clip-agent");
+    const id = await a.start("clipboard");
+    await login(page, `desktops/${id}`);
+    await liveConnected(page, "view");
+    if (DOCKER) {
+      // Desktop → browser: x11vnc announces clipboard changes to connected viewers.
+      await a.exec("printf 'from the desktop' | xclip -selection clipboard -i", id);
+    }
+    await page.getByTestId("take-over").click();
+    await liveConnected(page, "control");
+    const tools = page.getByTestId("control-tools");
+    await tools.getByText("clipboard", { exact: true }).click();
+    if (DOCKER) await expect(tools).toContainText("desktop clipboard: from the desktop");
+    // Browser → desktop.
+    await tools.getByPlaceholder("text to put on the desktop's clipboard").fill("pasted from my laptop");
+    await tools.getByRole("button", { name: "send to desktop" }).click();
+    await expect(page.getByText("sent to desktop clipboard")).toBeVisible();
+    if (!DOCKER) await expect.poll(async () => (await fakeVncInputs(id)).some((m) => m.type === 6)).toBe(true);
+    await page.getByTestId("hand-back").click();
+    await liveConnected(page, "view");
+    if (DOCKER) await expect.poll(() => a.exec("xclip -selection clipboard -o", id)).toContain("pasted from my laptop");
+  });
+
   test("a long-held lock shows a warning on the tile and the desktop page", async ({ page, agent }) => {
     const a = await agent("long-lock-agent");
     const id = await a.start("long-lock");

@@ -83,10 +83,11 @@ export default defineConfig({
   ],
   webServer: {
     // Builds the dashboard and the manager, starts the manager on a fresh data dir.
+    // (No pnpm here: its corepack shim lives in a shared volume and can be missing for a moment.)
     command: [
       `rm -rf ${dataDir} && mkdir -p ${dataDir}`,
-      "pnpm exec vite build --logLevel warn",
-      "pnpm --dir ../.. --filter '@deskhand/manager...' --silent build",
+      "node_modules/.bin/vite build --logLevel warn",
+      ...["shared", "mcp", "manager"].map((p) => `../../node_modules/.bin/tsc -p ../${p}/tsconfig.json`),
       "exec node ../manager/dist/main.js",
     ].join(" && "),
     env: managerEnv,

@@ -139,22 +139,54 @@ export function UploadDialog({ desktop, file, onClose }: { desktop: DesktopSumma
 
 export function DownloadDialog({ desktop, open, onOpenChange }: { desktop: DesktopSummary; open: boolean; onOpenChange: (v: boolean) => void }) {
   const [path, setPath] = useState("/home/agent/Downloads/");
+  const [error, setError] = useState<string | null>(null);
   const valid = path.startsWith("/") && !path.endsWith("/");
+  const href = valid ? api.fileUrl(desktop.id, path) : undefined;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent title="download file">
         <Field label="path inside the desktop">
-          <input className={inputClass} value={path} onChange={(e) => setPath(e.target.value)} autoFocus />
+          <input
+            className={inputClass}
+            value={path}
+            onChange={(e) => {
+              setPath(e.target.value);
+              setError(null);
+            }}
+            autoFocus
+          />
         </Field>
+        {error ? (
+          <p className="mb-3 text-xs text-red" role="alert">
+            {error}
+          </p>
+        ) : null}
         <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={() => onOpenChange(false)}>
             cancel
           </Button>
           <a
-            href={valid ? api.fileUrl(desktop.id, path) : undefined}
+            href={href}
             download
             aria-disabled={!valid}
-            onClick={() => valid && setTimeout(() => onOpenChange(false), 100)}
+            onClick={async (e) => {
+              if (!href || e.currentTarget.dataset.checked) return;
+              // Check first, so a missing file shows a message instead of downloading an error body.
+              e.preventDefault();
+              const a = e.currentTarget;
+              const res = await fetch(href, { method: "HEAD", credentials: "same-origin" }).catch(() => null);
+              if (!res?.ok) {
+                // HEAD has no body: fetch the (small, JSON) error once more for the manager's message.
+                const body = res ? await fetch(href, { credentials: "same-origin" }).then((r) => (r.ok ? null : r.json().catch(() => null))).catch(() => null) : null;
+                const msg = (body as { error?: { message?: string } } | null)?.error?.message;
+                setError(msg ?? (res?.status === 404 ? `No file at ${path}.` : `Couldn't download ${path}${res ? ` (${res.status})` : ""}.`));
+                return;
+              }
+              a.dataset.checked = "1";
+              a.click();
+              delete a.dataset.checked;
+              setTimeout(() => onOpenChange(false), 100);
+            }}
             className={`inline-flex h-8 items-center rounded-sm border border-amber bg-amber px-3 font-medium text-amber-ink ${valid ? "" : "pointer-events-none opacity-40"}`}
           >
             download

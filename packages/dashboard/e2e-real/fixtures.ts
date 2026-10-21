@@ -34,9 +34,9 @@ export class Agent {
     private readonly transport: StreamableHTTPClientTransport,
   ) {}
 
-  static async connect(name: string): Promise<Agent> {
+  static async connect(name: string, token = process.env.E2E_AGENT_TOKEN): Promise<Agent> {
     const transport = new StreamableHTTPClientTransport(new URL(`${MANAGER}/mcp`), {
-      requestInit: { headers: { Authorization: `Bearer ${process.env.E2E_AGENT_TOKEN}` } },
+      requestInit: { headers: { Authorization: `Bearer ${token}` } },
     });
     const client = new Client({ name, version: "1.0.0" });
     await client.connect(transport);
@@ -96,12 +96,12 @@ export async function waitRunning(id: string, timeout = DOCKER ? 90_000 : 10_000
     .toBe("running");
 }
 
-export const test = base.extend<{ agent: (name?: string) => Promise<Agent>; mobile: boolean }>({
+export const test = base.extend<{ agent: (name?: string, token?: string) => Promise<Agent>; mobile: boolean }>({
   mobile: async ({}, use, info) => use(info.project.name === "mobile"),
   agent: async ({}, use) => {
     const agents: Agent[] = [];
-    await use(async (name = "e2e-agent") => {
-      const a = await Agent.connect(name);
+    await use(async (name = "e2e-agent", token?: string) => {
+      const a = await Agent.connect(name, token);
       agents.push(a);
       return a;
     });

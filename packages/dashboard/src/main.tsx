@@ -8,6 +8,7 @@ import { ToastProvider, useToast } from "./components/ui/toast";
 import { ApiError, setUnauthorizedHandler } from "./lib/api";
 import { ROUTER_BASENAME } from "./lib/base";
 import { NowProvider } from "./lib/now";
+import { useSystem } from "./lib/queries";
 import { DesktopPage } from "./routes/Desktop";
 import { Grid } from "./routes/Grid";
 import { Login } from "./routes/Login";
@@ -31,13 +32,15 @@ function LoginLinkNotice() {
   const [params, setParams] = useSearchParams();
   const toast = useToast();
   const reason = params.get("login");
+  // Only once a request succeeded: when not signed in, the 401 handler carries the reason to the login page.
+  const signedIn = useSystem().isSuccess;
   useEffect(() => {
-    if (!reason) return;
+    if (!reason || !signedIn) return;
     toast(reason === "expired" ? "That login link had expired or was already used; you're still signed in." : "That login link was incomplete; you're still signed in.", "info");
     const next = new URLSearchParams(params);
     next.delete("login");
     setParams(next, { replace: true });
-  }, [reason, params, setParams, toast]);
+  }, [reason, signedIn, params, setParams, toast]);
   return null;
 }
 
