@@ -34,8 +34,9 @@ Auth is the session cookie; any `401` sends the dashboard to its login page. Err
 | `POST api/desktops/:id/stop` **new** | — | `DesktopSummary` | `docker stop`, files kept; releases the lock and clears attention. |
 | `POST api/desktops/:id/start` **new** | — | `DesktopSummary` | Start a stopped desktop (status `starting`). |
 | `POST api/desktops/:id/persistent` **new** | `{ persistent: boolean }` | `DesktopSummary` | "mark persistent" toggle. |
-| `POST api/desktops/:id/lock` **new route** | `{}` | `LockResponse` = `{ generation, lock: Lock }` | Take over. Holder is `"dashboard"`. Proxies daemon `POST /lock`. `400 invalid_argument` if not running. Idempotent if already locked. |
+| `POST api/desktops/:id/lock` **new route** | `{}` | `LockResponse` = `{ generation, lock: Lock }` | Take over. Holder is `"dashboard"`. Proxies daemon `POST /lock`. `409 desktop_stopped` if not running. Idempotent if already locked. |
 | `DELETE api/desktops/:id/lock` **new route** | `{ note: string \| null }` (`UnlockRequest`) | `LockResponse` = `{ generation, lock: null }` | Hand back with optional note. The manager should also clear `attention` (the request_human call returns with the note). |
+| `DELETE api/desktops/:id/attention` | `{ note: string \| null }` | `DesktopSummary` | "dismiss" on the needs-you panel: clears a request_human flag without taking over; the agent's request_human returns "dismissed". |
 | `POST api/desktops/:id/save-as-template` **new** | `{ name: string, description: TemplateDescription }` | `{ template: TemplateSummary, version: number }` | Quiesce + commit; can take several seconds. Name `^[a-z0-9][a-z0-9-]*$`; an existing name adds a version. `400 invalid_argument` with a readable message on bad input. |
 | `POST api/desktops/:id/files` **new** | `multipart/form-data`: `path` (absolute, default `/home/agent/Downloads/<file name>`), `file` | `{ path: string, bytes: number }` | Upload; file owned by `agent`. |
 | `GET api/desktops/:id/files?path=/abs/path` **new** | — | raw bytes, `Content-Disposition: attachment; filename="<basename>"` | Download, opened as a plain link (cookie auth). |
@@ -81,6 +82,28 @@ last point; `region.region` = `[x0, y0, x1, y1]` (zoom region, any corner order)
 | `POST auth/login` | `{ token: string }` | `204` + `Set-Cookie` session (HttpOnly, SameSite=Strict, Path=base) | Login page with an API token. `401 unauthorized` with a readable message for a bad token. |
 | `GET auth/login?code=…` | — | `302` to `${base}/` + `Set-Cookie` | Login links; handled entirely server-side. |
 | `POST auth/logout-all` | — | `204` | "Sign out everywhere"; the dashboard then shows its login page. |
+
+## As wired against the real manager (phase 5)
+
+The dashboard now runs against `packages/manager` end to end (`e2e-real/`, see below). Where the manager differs
+from the tables above, the manager wins and the mock mirrors it:
+
+- `POST api/desktops` answers `201` while the desktop is still `starting`.
+- Anything that needs a running desktop (lock, files, screenshots) answers `409 desktop_stopped` when it isn't.
+- A dead login link (`GET auth/login?code=…`) redirects to `${base}/?login=expired` (`missing` without a code): the
+  login page explains it, or — already signed in — a toast says the session is still valid.
+- Templates (phase 4): `PUT api/templates/:name/recipe {recipe}` (recipe editor), `POST api/templates/:name/rebuild`
+  (rebuild button; waits for the new version), save-as-template takes `confirm_description: true` instead of a
+  description for a new version ("keep the current description") and returns `notes`; `TemplateVersion.changes` is
+  preferred over the client-side diff. `GET api/templates/:name/diff` exists but the page doesn't need it.
+- `LogEntry.session` is the session label (`token/abcd`), like `DesktopSummary.session`.
+- Fake runtime only: `GET api/desktops/:id/fake-inputs` (what reached a fake desktop, incl. VNC input that got
+  through the filter) for the e2e suite.
+
+Tests: `pnpm e2e` (mock), `pnpm e2e:real` (real manager, `DESKHAND_RUNTIME=fake`), `pnpm e2e:docker` (real manager +
+`deskhand-desktop:dev` desktops, needs `DEV_DOCKER=1`); `SCREENSHOTS=1 pnpm e2e:docker screenshots` refreshes
+`screenshots/real/`. Run them in the Playwright image:
+`DEV_DOCKER=1 DEV_IMAGE=mcr.microsoft.com/playwright:v1.64.1-noble scripts/dev pnpm --filter @deskhand/dashboard e2e:docker`.
 
 ## Suggested additions to `packages/shared`
 

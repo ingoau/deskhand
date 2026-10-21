@@ -219,6 +219,32 @@ Runtime interface: `imageInfo`, `exec`, `writeFile`, `copyFromImage`; `removeIma
   attention = amber, running = green, you have control = violet, stopped = grey, starting = blue.
 - Thumbnails: `GET ${base}/api/desktops/:id/thumbnail` (WebP, scaled) refreshed every 1–2 s, not VNC.
 
+### Dashboard as built against the real manager (phase 5)
+
+- **Live view:** view mode is noVNC `viewOnly` with pointer events passed through to the page (scroll/pinch the page
+  on phones); the daemon drops any input that still arrives (verified in e2e with a raw-RFB client from the page).
+  Take over → reconnect with `mode=control&generation=<lock.generation>`; hand back → view mode. A dropped
+  connection refetches the desktop (to pick up a new generation) and reconnects with backoff 0.5 s → 10 s, reset on
+  connect. "1:1" switches to `clipViewport` + `dragViewport` (drag pans, tap still clicks) without reconnecting.
+  Touch in control mode is noVNC's gesture model (tap = click, long press = right click, drag, two-finger scroll).
+  Keyboard on phones: the "type into desktop" box, plus "⌨ keyboard", which focuses a hidden textarea and forwards
+  each key (a one-character sentinel makes Android backspace visible). Clipboard both ways via noVNC's cut-text
+  events, only while in control (the daemon filters ClientCutText otherwise).
+- **Takeover UX:** a lock held ≥ 30 min shows "hand back?" on the tile and "agent waiting" on the desktop page; it is
+  never released automatically. request_human: amber tile + banner with "times out in" from `attention.timeoutAt`,
+  "take over →" from the banner, "dismiss" (`DELETE …/attention`).
+- **Action log:** `zoom` stores the full screen as its log screenshot (it stored the zoomed crop before), so every
+  overlay is in screen coordinates over a full-screen image (`viewBox = DesktopSummary.screen`); no extra size field
+  was needed. `LogEntry.session` is the session label.
+- **Fake runtime:** the fake daemon speaks minimal RFB 3.8 (security None, raw frames of the fake screen) and applies
+  the same view/control/generation rule, so the dashboard's live view and its e2e suite run without Docker;
+  `GET /api/desktops/:id/fake-inputs` exists only with `DESKHAND_RUNTIME=fake`; `DESKHAND_FAKE_LOCK_WAIT_MS`.
+- **E2E against the real manager:** `packages/dashboard/playwright.real.config.ts` builds the dashboard and manager,
+  starts the manager on a fresh data dir (port 17620 fake / 17621 docker, base `/deskhand`), logs in with login links
+  made by the admin credential, and plays the agent with an MCP SDK client. Docker mode labels everything
+  `owner=deskhand-dev` with its own instance, network and prefix, and removes desktops, `e2e-*` templates and the
+  network in its teardown.
+
 ## Dev and test
 
 - `scripts/dev` runs Node commands in a container (no Node on the host). Dev images are tagged `:dev`.
