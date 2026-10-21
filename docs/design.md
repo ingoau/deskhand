@@ -39,8 +39,12 @@ human ──dashboard─┘   Fastify, SQLite,     │      Xvfb :0 (agent) · o
   Docker's default seccomp profile blocks, and on AppArmor hosts (Debian 13 here) the `docker-default` AppArmor
   profile blocks it too. The image ships `images/desktop/chrome-seccomp.json` (also at
   `/opt/deskhand/chrome-seccomp.json`): Docker 26's default profile plus one rule allowing `clone`, `unshare`,
-  `setns`. **The manager should start desktops with** `SecurityOpt: ["seccomp=<JSON content of that file>",
-  "apparmor=unconfined"]` (the Docker API takes the profile's JSON text, the CLI takes a path). The wrapper probes
+  `setns`. **The manager starts desktops with** `SecurityOpt: ["seccomp=<JSON content of that file>",
+  "apparmor=unconfined"]` (the Docker API takes the profile's JSON text, the CLI takes a path). As built (phase 2):
+  the manager reads the profile at startup (`DESKHAND_SECCOMP_PROFILE`, default `/opt/deskhand/chrome-seccomp.json`
+  in the manager image or the repo copy). It adds `apparmor=unconfined` only when `docker info` lists AppArmor.
+  `DESKHAND_CHROME_SANDBOX=off` turns both off, and the wrapper then falls back. Verified by the e2e test:
+  `/state` says `chromiumSandbox: "on"`, and renderers run in their own user namespace. The wrapper probes
   `unshare --user` and, if it fails (plain `docker run`), starts Chromium with `--no-sandbox`, logs a warning and
   reports `chromiumSandbox: "off"` in `/state`. Trade-off: `apparmor=unconfined` loosens the container's own
   confinement a little in exchange for Chrome's renderer sandbox; seccomp stays on and no capabilities are added.
@@ -52,7 +56,15 @@ human ──dashboard─┘   Fastify, SQLite,     │      Xvfb :0 (agent) · o
   (GTK), mousepad (GTK), ristretto (GTK image viewer), FeatherPad (Qt 6), xterm; Noto core/mono/CJK/colour emoji.
   `/etc/deskhand-versions.json` lists versions. ~1.7 GB uncompressed (amd64).
 - x11vnc gets `ulimit -n 1024`: under Docker's default nofile limit (~10⁹) it loops over every fd and never
-  reaches `accept()`.
+  reaches `accept()`. Phase 2 found that tint2 had the same problem: its forked launcher child closed fds for
+  minutes, so clicking a panel launcher did nothing. The entrypoint now caps the soft nofile limit at 65536 for the
+  whole session. The hard limit is unchanged, so Chromium can still raise its own.
+- `/run/deskhand` (key, session.env, screen.env) is a **tmpfs** created by the manager (`HostConfig.Tmpfs`, mode
+  0755 root; the key file is 0600 root). `docker commit` never captures tmpfs contents, so template images cannot
+  contain a desktop's key. The directory stays 0755, not 0700, because agent processes source the env files in it.
+- The daemon starts only after the panel is mapped (`session --wait-panel`, up to 15 s). Until then `/health` does
+  not answer, so `desktop_start` cannot return a desktop whose first launcher click would be lost (phase 2 finding:
+  clicks in the first ~2 s after start went nowhere).
 - Daemon auth: `Authorization: Bearer <key>` on every route except `GET /health` (websocket upgrades too).
 
 ## Lock, generation, hand-back (owned by the daemon)
@@ -299,7 +311,55 @@ coordinate, text?)`, `mouse_move(coordinate)`, `left_mouse_down()`, `left_mouse_
 - **Sessions survive manager restarts:** a request carrying a known, unexpired session id from the same token is
   resumed without re-initialising. Shutdown never removes desktops.
 - **CLI auth:** the manager writes `<data>/admin.json` (`{url, token}`, mode 0600, rotated each start); the CLI uses it
-  when run inside the manager container. Agent API tokens cannot manage tokens or login links.
+  when run inside the manager container. Agent API tokens cannot manage tokens or login links. Since phase 2 the file
+  also has `publicUrl`, the published address, which the CLI uses in printed hints such as `claude mcp add …`.
+  In compose, `url` is the in-container `http://127.0.0.1:7480`.
+
+## Packaging, sessions and verification (phase 2, as built)
+
+- **Manager image** `images/deskhand/Dockerfile` (build context = repo root, `Dockerfile.dockerignore` next to it).
+  The build stage is `node:24-trixie`, so native modules can compile if no prebuild fits: pnpm install, build the
+  manager, MCP server, CLI and dashboard, then reinstall prod-only and copy the workspace layout. pnpm's symlinks are
+  relative, so the layout carries over. New dependencies (such as `@playwright/mcp`) need no Dockerfile change. The
+  runtime is `node:24-trixie-slim` with `/opt/deskhand/app`, the dashboard at
+  `/opt/deskhand/app/packages/dashboard/dist`, Chrome's seccomp profile at `/opt/deskhand/chrome-seccomp.json`, and
+  `deskhand` on PATH. About 340 MB.
+- **Non-root with the Docker socket:** the entrypoint runs as root only to find the socket's gid (it differs per host),
+  chown `/data` and `exec setpriv` to `node` (uid 1000) with that gid as a supplementary group and no capabilities.
+  If the socket is not group read/writable, it warns and stays root. `docker compose exec deskhand deskhand …` runs as
+  root and reads `/data/admin.json`. HEALTHCHECK: `node /opt/deskhand/healthcheck.mjs` (GET `<base>/healthz`).
+- **Listen vs published address:** `DESKHAND_LISTEN` (image default `0.0.0.0:7480`) is where the process listens.
+  `DESKHAND_BIND` keeps the plan's meaning, the published host address (compose maps `${DESKHAND_BIND}:7480`), and
+  printed links use it unless `DESKHAND_PUBLIC_URL` is set. Without `DESKHAND_LISTEN`, the manager listens on
+  `DESKHAND_BIND` (dev and tests).
+- **compose.yaml:** project `deskhand` (`DESKHAND_PROJECT`), service `deskhand`, image
+  `ghcr.io/ingoau/deskhand:${DESKHAND_VERSION:-latest}`, `restart: unless-stopped`, the socket and `deskhand-data`
+  volume (named exactly that; `DESKHAND_DATA_VOLUME`), and network `deskhand-desktops` (named; `DESKHAND_NETWORK`;
+  not internal). Compose creates the network and the manager attaches desktops to it. Desktops stay out of compose,
+  so `docker compose down` cannot remove a network that still has desktops on it, and desktops keep running across
+  upgrades. Every config variable is listed with the plan's default; `TZ`/`LANG` come from the host shell. The
+  desktop image defaults to `ghcr.io/ingoau/deskhand-desktop:<DESKHAND_VERSION compiled into the manager>`, so a
+  manager pulls the matching desktop. `compose.dev.yaml` builds `deskhand:${DESKHAND_DEV_TAG:-dev}` and
+  `deskhand-desktop:…` locally (`--profile build`) and points the manager at the local desktop tag.
+- **Session end without DELETE:** Claude Code (2.1.306, `claude -p`) exits without `DELETE /mcp`, so sessions and their
+  ephemeral desktops lived until `DESKHAND_SESSION_TIMEOUT` (24h). The MCP service now counts each session's standalone
+  SSE stream (`GET /mcp`, which Claude Code and the SDK client open right after `initialize`). A session that had one,
+  then has none, with no requests and no tool call running, for `DESKHAND_SESSION_DISCONNECT_GRACE` (default 60s; `0`
+  disables) ends as `disconnected`, and its ephemeral desktops are removed. Measured: removed about 66 s after
+  `claude -p` exits (grace + one sweep). The grace is well past the SDK client's reconnect backoff. Clients that never
+  open the stream still fall back to the 24h timeout. Idle GET streams get an SSE comment (`: keepalive`) every 25 s,
+  so reverse proxies don't cut them; a cut stream would look like a disconnect. Claude Code's first request is a
+  `server/discover` probe, which gets a 400; it then falls back to `initialize`.
+- **Scripted e2e** (`packages/manager/test/e2e/real-desktop.test.ts`, `DEV_DOCKER=1 scripts/dev pnpm --filter
+  @deskhand/manager test:e2e`, image `DESKHAND_E2E_IMAGE`, ports 17300–17349) runs against the in-process manager, or
+  against a deployment (`DESKHAND_E2E_URL`/`TOKEN`). It covers: the toolset contract on the real server; two concurrent
+  sessions with ro/rw mounts (enforcement, host ownership); Chromium opened by one launcher click; the sandbox; the
+  tmpfs key dir; removal on session end; cursor/zoom/ui_tree; an RFB handshake through the VNC proxy; and parallel
+  actions on two desktops of one session.
+- **Reliability suite** (`suite/run.sh`, stdlib Python on the Docker host, real `claude -p` sessions, on demand). It has
+  phase 2 tasks in `runner.py` (`contract`, `two_sessions`, `subagents`) and declarative `suite/tasks/*.json` (phase 3/4)
+  with JavaScript asserts evaluated in a throwaway `node:24` container. Results with transcripts go to `suite/results/`.
+  Resource numbers: `docs/sizing.md` (`suite/measure-resources.py`).
 
 ## Beyond pixels implementation notes (phase 3)
 

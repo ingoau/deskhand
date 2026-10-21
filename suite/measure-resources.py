@@ -110,6 +110,11 @@ def main() -> int:
             step(f"+ tab {p.split('/')[2]} (loading)", lambda n, p=p: in_desktop(n, f"deskhand-chromium '{p}' >/dev/null 2>&1"), window=12, during=True)
         step(f"chromium, {len(PAGES)} busy tabs, idle", lambda n: None, settle=10)
         step("scrolling the active tab (PageDown x40)", lambda n: in_desktop(n, "nohup bash -c 'for i in $(seq 40); do xdotool key Next; sleep 0.4; done' >/dev/null 2>&1 &"), window=14, during=True)
+        # Writable layer (Chromium profile + cache etc.) after browsing.
+        for n in names:
+            size = subprocess.run(["docker", "ps", "-a", "-s", "--filter", f"name=^{n}$", "--format", "{{.Size}}"], capture_output=True, text=True).stdout.strip()
+            results.setdefault("disk", {})[n] = size  # type: ignore[union-attr]
+            print(f"writable layer {n}: {size}")
     finally:
         for did in ids:
             try:
