@@ -23,6 +23,8 @@ export interface UiTreeRoot {
   role?: string;
   children?: UiTreeNode[];
   truncated?: boolean;
+  /** Every window (also those a `window` filter left out), topmost first: name, app, box, states, z. */
+  stack?: Array<{ name: string; app?: string; box?: [number, number, number, number]; states?: string[]; z: number }>;
 }
 
 type Rect = [number, number, number, number]; // x, y, w, h
@@ -146,7 +148,12 @@ export function formatUiTree(tree: UiTreeRoot, opts: FormatOptions): Formatted {
     push(head, title);
     if (!minimized) {
       const clip = wbox ? (inter(wbox, screen) ?? screen) : screen;
-      const winCovers = [...covers];
+      // Windows above this one, including ones a `window` filter left out (older helpers: only listed ones).
+      const winCovers = tree.stack
+        ? tree.stack
+            .filter((s) => s.z < (w.z ?? 0) && s.box && !s.states?.includes("minimized"))
+            .map((s) => ({ rect: s.box as Rect, title: s.name || `(${s.app ?? "untitled"} window)` }))
+        : [...covers];
       const walk = (n: UiTreeNode, depth: number) => {
         if (cut) return;
         const named = !!(n.name || n.description || n.value !== undefined);
@@ -178,16 +185,18 @@ export function formatUiTree(tree: UiTreeRoot, opts: FormatOptions): Formatted {
   }
 
   const n = wins.length;
+  const all = tree.stack ? tree.stack.map((s) => `${q(s.name || "(untitled)", 50)} (${s.app ?? "?"})`) : null;
   const header = [
     n
       ? `${n} window${n === 1 ? "" : "s"}${opts.window ? ` matching ${q(opts.window, 60)}` : ""}, topmost first. Each element: role "name" [states] value=… @x,y (the point to click, in screenshot pixels) box=[x,y,w,h].`
       : opts.window
-        ? `No window matches ${q(opts.window, 60)} (by title or app name).`
+        ? `No window matches ${q(opts.window, 60)} (by title or app name).${all ? (all.length ? ` Open windows: ${all.join(", ")}.` : " No windows with accessible elements are open.") : ""}`
         : "No windows with accessible elements are open.",
   ];
+  if (n && opts.window && all && all.length > n) header.push(`(Other open windows: ${tree.stack!.filter((s) => !wins.some((w) => w.z === s.z)).map((s) => q(s.name || "(untitled)", 50)).join(", ")}.)`);
   const footer: string[] = [];
   if (cut || tree.truncated) {
-    const names = wins.map((w) => w.name || w.app || "?");
+    const names = tree.stack ? tree.stack.map((s) => s.name || s.app || "?") : wins.map((w) => w.name || w.app || "?");
     footer.push(
       `(Truncated: the tree is larger than ${cut ? `${maxChars} characters` : "the helper's node limit"}${cutWindows.size ? `; cut inside ${[...cutWindows].map((t) => q(t, 60)).join(", ")}` : ""}. Pass window="<part of a title or app name>" to see one window: ${names.map((t) => q(t, 50)).join(", ")}. For web pages, browser_snapshot is more precise.)`,
     );

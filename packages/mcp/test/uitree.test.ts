@@ -64,6 +64,18 @@ describe("formatUiTree", () => {
   it("reports an empty filter result", () => {
     expect(formatUiTree({ children: [] }, { screen, window: "nope" }).text).toMatch(/No window matches "nope"/);
   });
+
+  it("with a window filter, still avoids windows stacked above that the filter left out", () => {
+    const wins = fixture.children!;
+    const stack = wins.map((w) => ({ name: w.name, app: w.app, box: w.box, states: w.states, z: w.z! }));
+    const chromium = wins.find((w) => w.app === "Chromium")!;
+    const out = formatUiTree({ children: [chromium], stack }, { screen, window: "chromium" });
+    expect(out.windows).toBe(1);
+    expect(out.text.split("\n").find((l) => l.includes('link "Range slider"'))).toContain("covered by window");
+    expect(out.text).toContain("Other open windows:");
+    const none = formatUiTree({ children: [], stack }, { screen, window: "gimp" });
+    expect(none.text).toMatch(/No window matches "gimp".*Open windows: .*Mousepad/);
+  });
 });
 
 describe("clickPoint", () => {

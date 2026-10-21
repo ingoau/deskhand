@@ -133,6 +133,11 @@ def main():
                 s = t.getText(0, min(n, MAX_VALUE + 1))
                 if role == "paragraph" and not s:
                     return None
+                s = s.replace("\ufffc", "")
+                if role == "combo box":
+                    s = s.strip()
+                    if not s:
+                        return None
                 return s[:MAX_VALUE] + ("…" if n > MAX_VALUE else "")
         except Exception:
             pass
@@ -229,8 +234,6 @@ def main():
                 continue
             if win is None:
                 continue
-            if want and want not in title.lower() and want not in app_name.lower():
-                continue
             candidates.append((win, app_name, pid, title))
 
     # Match AT-SPI windows to X windows (pid + title, then title, then pid) for stacking order and focus.
@@ -254,11 +257,27 @@ def main():
     placed.sort(key=lambda p: -(p[0] if p[0] is not None else top))
 
     windows = []
+    stack = []  # every window, topmost first: what may cover the windows we return
     for idx, win, app_name, title in placed:
-        wbudget = [args.max_window_nodes if not want else args.max_nodes]
-        node = walk(win, 0, wbudget)
-        if node is None:
-            continue
+        matched = not want or want in title.lower() or want in app_name.lower()
+        if matched:
+            node = walk(win, 0, [args.max_window_nodes if not want else args.max_nodes])
+            if node is None:
+                continue
+        else:
+            # Not asked for: only its frame (it may cover the windows that were asked for).
+            try:
+                kids = win.childCount
+                role = win.getRoleName() or "window"
+            except Exception:
+                continue
+            st, _ = state_names(win)
+            node = {"role": role, "name": title[:500], "states": st}
+            b = box_of(win)
+            if b is not None:
+                node["box"] = b
+            if kids:
+                node["children"] = []
         # Unnamed, empty top-level windows are leftovers (e.g. Chromium's hidden omnibox popups).
         if not node.get("name") and not node.get("children"):
             continue
@@ -275,10 +294,15 @@ def main():
         else:
             node.pop("states", None)
         node["app"] = app_name
-        windows.append(node)
-    for z, w in enumerate(windows):
-        w["z"] = z
-    out = {"role": "desktop", "name": "", "children": windows}
+        node["z"] = len(stack)
+        entry = {"name": node.get("name", ""), "app": app_name, "z": node["z"]}
+        for k in ("box", "states"):
+            if k in node:
+                entry[k] = node[k]
+        stack.append(entry)
+        if matched:
+            windows.append(node)
+    out = {"role": "desktop", "name": "", "children": windows, "stack": stack}
     if truncated[0]:
         out["truncated"] = True
     print(json.dumps(out, ensure_ascii=False))

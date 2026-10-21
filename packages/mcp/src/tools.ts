@@ -680,7 +680,7 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
       const tree = (await rd.daemon.uiTree(args.window)) as UiTreeRoot;
       const out = formatUiTree(tree, { screen: rd.desktop.screen, window: args.window });
       let body = out.text;
-      if (args.window && out.windows === 0) {
+      if (args.window && out.windows === 0 && !tree.stack) {
         // Say which windows exist so the agent can pick a better filter.
         const all = (await rd.daemon.uiTree().catch(() => null)) as UiTreeRoot | null;
         const names = (all?.children ?? []).map((w) => `${JSON.stringify(w.name || "(untitled)")} (${w.app ?? "?"})`);

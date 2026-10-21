@@ -199,7 +199,11 @@ export type ExecResponse = z.infer<typeof ExecResponse>;
 
 /** GET /files?path=/abs/path -> raw bytes. PUT /files?path=/abs/path (raw body) -> {bytes}. Owned by `agent`. */
 
-/** GET /ui-tree?window=<title substring> */
+/**
+ * GET /ui-tree?window=<title or app substring> -> {role:"desktop", children: UiNode[] (windows, topmost
+ * first), stack?: [{name, app, box, states, z}] (every window, also those the filter left out, so callers
+ * can tell what covers what), truncated?: true}
+ */
 export const UiNode: z.ZodType<UiNodeT> = z.lazy(() =>
   z.object({
     role: z.string(),
