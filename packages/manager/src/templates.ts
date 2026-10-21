@@ -25,7 +25,7 @@ import type { DB } from "./db.js";
 import { getMeta, setMeta } from "./db.js";
 import type { Manifest } from "./manifest.js";
 import type { Runtime } from "./runtime/types.js";
-import { nowIso } from "./util.js";
+import { KeyedMutex, nowIso } from "./util.js";
 
 export const BASE_TEMPLATE = "base";
 /** Default image repository for template versions (DESKHAND_TEMPLATE_REPO overrides it). */
@@ -100,6 +100,17 @@ export interface PreparedSave {
   isNew: boolean;
 }
 
+export interface SaveOptions {
+  prepared: PreparedSave;
+  containerId: string;
+  savedBy: string | null;
+  byAgent: boolean;
+  base: BaseInfo;
+  manifest: Manifest;
+  savedFrom?: { desktop: string; title: string | null; session: string | null } | null;
+  rebuiltFrom?: number | null;
+}
+
 function parseList(s: string | null | undefined): string[] {
   try {
     const v = JSON.parse(s ?? "[]") as unknown;
@@ -156,6 +167,7 @@ export function baseVersionString(version: string, created: string): string {
 export class TemplateService extends EventEmitter {
   /** Counts desktops using a template version; set by the composition root. */
   inUse: (name: string, version: number) => number = () => 0;
+  private readonly mutex = new KeyedMutex();
   /** The desktop image the manager runs now. Updated by initBase(). */
   base: BaseInfo;
 
@@ -480,17 +492,12 @@ export class TemplateService extends EventEmitter {
     return { name, description, recipe, isNew: !prev };
   }
 
-  /** Commits a (quiesced) container as the next version and makes it current. */
-  async save(opts: {
-    prepared: PreparedSave;
-    containerId: string;
-    savedBy: string | null;
-    byAgent: boolean;
-    base: BaseInfo;
-    manifest: Manifest;
-    savedFrom?: { desktop: string; title: string | null; session: string | null } | null;
-    rebuiltFrom?: number | null;
-  }): Promise<TemplateSummary> {
+  /** Commits a (quiesced) container as the next version and makes it current. Saves of one template run one at a time. */
+  save(opts: SaveOptions): Promise<TemplateSummary> {
+    return this.mutex.run(`tpl:${opts.prepared.name}`, () => this.saveNow(opts));
+  }
+
+  private async saveNow(opts: SaveOptions): Promise<TemplateSummary> {
     const { name, description, recipe } = opts.prepared;
     const existing = this.db.prepare("SELECT * FROM templates WHERE name = ?").get(name) as { deleted_at: string | null } | undefined;
     const maxV = (this.db.prepare("SELECT MAX(version) AS v FROM template_versions WHERE name = ?").get(name) as { v: number | null }).v ?? 0;

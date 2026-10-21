@@ -41,6 +41,10 @@ describe("parseConfig", () => {
     expect(c.stoppedRetentionMs).toBe(86_400_000);
     expect(c.logRetentionMs).toBe(7 * 86_400_000);
     expect(c.templateVersions).toBe(5);
+    expect(c.templateRepo).toBe("deskhand-template");
+    expect(c.templateStaleMs).toBe(14 * 86_400_000);
+    expect(c.templateCarryPaths).toEqual([".config/chromium", ".mozilla", ".local/share/keyrings", ".pki"]);
+    expect(c.templateAutoRebuild).toBe(true);
     expect(c.bind).toEqual({ host: "127.0.0.1", port: 7480 });
     expect(c.basePath).toBe("");
     expect(c.auth).toBe(true);
@@ -91,6 +95,25 @@ describe("parseConfig", () => {
     expect(c.network).toBe("n1");
     expect(c.mountAllow).toEqual(["/home/me/work", "/srv/data"]);
     expect(c.mountDeny).toEqual(["/home/me/.ssh"]);
+  });
+
+  it("reads the template options", () => {
+    const c = parseConfig({
+      DESKHAND_TEMPLATE_REPO: "registry.local/team/deskhand-template",
+      DESKHAND_TEMPLATE_STALE_AFTER: "3d",
+      DESKHAND_TEMPLATE_CARRY: "~/.config/chromium, .local/share/keyrings/",
+      DESKHAND_TEMPLATE_AUTO_REBUILD: "off",
+      DESKHAND_RECIPE_TIMEOUT: "5m",
+    });
+    expect(c).toMatchObject({
+      templateRepo: "registry.local/team/deskhand-template",
+      templateStaleMs: 3 * 86_400_000,
+      templateCarryPaths: [".config/chromium", ".local/share/keyrings"],
+      templateAutoRebuild: false,
+      recipeTimeoutMs: 300_000,
+    });
+    expect(() => parseConfig({ DESKHAND_TEMPLATE_CARRY: "/etc" })).toThrow(/relative to the agent's home/);
+    expect(() => parseConfig({ DESKHAND_TEMPLATE_REPO: "Bad Repo" })).toThrow(/DESKHAND_TEMPLATE_REPO/);
   });
 
   it("accepts a percentage memory budget and resolves it against host memory", () => {

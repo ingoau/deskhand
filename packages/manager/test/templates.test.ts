@@ -141,7 +141,10 @@ describe("templates (fake runtime)", () => {
     const { client, transport } = await connectMcp(t.url, t.token);
     let changed = 0;
     client.setNotificationHandler(ToolListChangedNotificationSchema, async () => void changed++);
-    await client.callTool({ name: "desktop_start", arguments: { template: "shop" } });
+    const started = textOf(await client.callTool({ name: "desktop_start", arguments: { template: "shop" } }));
+    expect(started).toContain("template shop v2");
+    expect(started).toContain("Template shop is already signed in to: deskhand.test");
+    expect(started).toContain("template_feedback");
     await client.callTool({ name: "template_feedback", arguments: { result: "ok", note: "logged in fine" } });
     let s = (await api(t, "GET", "/api/templates/shop")).data;
     expect(s.lastConfirmedAt).toBeTruthy();

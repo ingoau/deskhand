@@ -185,6 +185,22 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
         all.length > 1 ? `This session now has ${all.length} desktops; pass desktop="${d.id}" to use this one.` : `Other tools use it by default; pass desktop="${d.id}" to be explicit.`,
       ];
       if (d.mounts.length) lines.push(`Mounted: ${d.mounts.map((m) => `${m.path} (${m.write ? "read-write" : "read-only"})`).join(", ")}.`);
+      let tpl: TemplateSummary | undefined;
+      try {
+        tpl = d.template === "base" ? undefined : ctx.backend.listTemplates().find((x) => x.name === d.template);
+      } catch {
+        tpl = undefined;
+      }
+      if (tpl) {
+        if (tpl.loggedInSites.length) {
+          lines.push(
+            `Template ${tpl.name} is already signed in to: ${tpl.loggedInSites.join(", ")}. Apps start closed: open Chromium (taskbar, or desktop_exec "chromium <url> &") and the session is active — no need to sign in.`,
+          );
+        }
+        if (tpl.description.setup_notes) lines.push(`Template notes: ${clip(tpl.description.setup_notes, 500)}`);
+        if (tpl.stale) lines.push(`This template is marked stale (${tpl.staleReason ?? "not confirmed recently"}); check that it still works and report with template_feedback.`);
+        else lines.push("When you know whether the template worked as described, report it with template_feedback (ok or problem).");
+      }
       return {
         content: [text(lines.join("\n")), await imageContent(ctx, raw)],
         desktopId: d.id,
