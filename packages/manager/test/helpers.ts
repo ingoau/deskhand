@@ -17,7 +17,10 @@ const usedPorts = new Set<number>();
  * Ports are not reused within a test file, so a client's pooled keep-alive socket to a closed
  * manager is never mistaken for a connection to a new one.
  */
-export async function freePort(lo = 17200, hi = 17249): Promise<number> {
+const envPorts = /^(\d+)-(\d+)$/.exec(process.env.DESKHAND_TEST_PORTS ?? "");
+
+/** DESKHAND_TEST_PORTS=17400-17449 moves the range (shared hosts where 17200-17249 belong to someone else). */
+export async function freePort(lo = envPorts ? Number(envPorts[1]) : 17200, hi = envPorts ? Number(envPorts[2]) : 17249): Promise<number> {
   const span = hi - lo + 1;
   const start = Math.floor(Math.random() * span);
   for (let i = 0; i < span; i++) {

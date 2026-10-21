@@ -385,7 +385,7 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
   // ------------------------------------------------ computer use (computer_toolset_20260801)
   reg.register({
     name: "screenshot",
-    description: "Take a screenshot of the whole screen. Coordinates in other tools are pixels of this image.",
+    description: "Take a screenshot of the whole screen. Coordinates in other tools are pixels of this image. To act precisely, prefer browser_snapshot for web pages and ui_tree for native apps; use zoom to read small text.",
     inputSchema: obj({ desktop: desktopProp }),
     parse: z.object({ desktop: zDesktop }).strict(),
     scope: "desktop",
@@ -428,7 +428,7 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
   });
 
   const clickDesc: Record<string, string> = {
-    left_click: "Click the left mouse button at `coordinate`, or at the current cursor position when omitted.",
+    left_click: "Click the left mouse button at `coordinate`, or at the current cursor position when omitted. For web pages browser_click is more reliable; for native apps click the @x,y point from ui_tree; zoom before clicking small targets.",
     right_click: "Click the right mouse button at `coordinate`, or at the current cursor position when omitted.",
     middle_click: "Click the middle mouse button at `coordinate`, or at the current cursor position when omitted.",
     double_click: "Double-click the left mouse button at `coordinate`, or at the current cursor position when omitted.",
@@ -643,10 +643,10 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
   reg.register({
     name: "desktop_exec",
     description:
-      "Run a shell command inside the desktop as the `agent` user (stdin closed) and return its exit code and output: launch apps (`chromium &`, `xdg-open file`), read or set the clipboard, inspect files. timeout in seconds (default 60, max 600) kills the whole process group. Confined to the desktop container and its mounts.",
+      "Run a shell command inside the desktop as the `agent` user (stdin closed) and return its exit code and output: launch apps (`mousepad ~/notes.txt &`, `featherpad &`, `xdg-open file` — end with & so the call returns), read or set the clipboard (`xclip`), inspect files. Returns as soon as the command exits, even if it left background processes. timeout in seconds (default 60, max 600) kills the whole process group. Confined to the desktop container and its mounts.",
     inputSchema: obj(
       {
-        command: { type: "string", description: "Shell command (run with sh -c)." },
+        command: { type: "string", description: "Shell command (run with bash -c in the agent user's home directory)." },
         timeout: { type: "number", minimum: 1, maximum: 600, description: "Seconds before the command is killed (default 60)." },
         desktop: desktopProp,
       },
