@@ -39,9 +39,9 @@ export const ScrollAction = z.object({
 export const TypeAction = z.object({ action: z.literal("type"), text: z.string() });
 export const KeyAction = z.object({ action: z.literal("key"), text: z.string(), repeat: z.number().int().min(1).max(100).optional() });
 /** duration in seconds */
-export const HoldKeyAction = z.object({ action: z.literal("hold_key"), text: z.string(), duration: z.number().min(0).max(100) });
+export const HoldKeyAction = z.object({ action: z.literal("hold_key"), text: z.string(), duration: z.number().min(0).max(300) });
 /** duration in seconds */
-export const WaitAction = z.object({ action: z.literal("wait"), duration: z.number().min(0).max(100) });
+export const WaitAction = z.object({ action: z.literal("wait"), duration: z.number().min(0).max(300) });
 
 export const InputAction = z.discriminatedUnion("action", [
   ClickAction,
@@ -101,7 +101,10 @@ export const ScreenshotQuery = z.object({
   /** 0 < scale <= 1; thumbnails use a small scale. Coordinates are never scaled for agents. */
   scale: z.coerce.number().positive().max(1).optional(),
   quality: z.coerce.number().int().min(1).max(100).optional(),
-  /** Zoom region [x0,y0,x1,y1] in screen pixels, returned at full resolution. */
+  /**
+   * Zoom region "x0,y0,x1,y1" in screen pixels. Captured at full resolution, then scaled (up or down) to fit
+   * within the screen size with aspect ratio preserved — matching computer_toolset_20260801's `zoom`.
+   */
   region: z.string().optional(),
 });
 

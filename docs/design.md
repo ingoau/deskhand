@@ -96,3 +96,18 @@ human ──dashboard─┘   Fastify, SQLite,     │      Xvfb :0 (agent) · o
 
 - `scripts/dev` runs Node commands in a container (no Node on the host). Dev images are tagged `:dev`.
 - Test containers/resources are labelled `owner=deskhand-dev` and cleaned up by the tests.
+
+## Computer-use parity (computer_toolset_20260801)
+
+Checked against https://platform.claude.com/docs/en/agents-and-tools/tool-use/computer-use-tool (2026-10-22):
+17 members — `screenshot`, `zoom(region)`, `left_click`/`right_click`/`middle_click`/`double_click`/`triple_click`
+(`coordinate?`, `text?` modifiers `shift|ctrl|alt|super` joined by `+`), `left_click_drag(start_coordinate,
+coordinate, text?)`, `mouse_move(coordinate)`, `left_mouse_down()`, `left_mouse_up()`, `cursor_position()`,
+`scroll(scroll_direction, scroll_amount, coordinate?, text?)`, `type(text)`, `key(text, repeat? 1–100)`,
+`hold_key(text, duration ≤ 300 s)`, `wait(duration ≤ 300 s)`.
+- `zoom` returns the region captured at full resolution and scaled to fit the usual screenshot dimensions,
+  aspect preserved. Coordinates always stay in full-screenshot space.
+- `cursor_position` returns text like `X=512, Y=384`.
+- Images: the docs name PNG and JPEG; agent-facing results use those (WebP only for dashboard thumbnails).
+- deskhand extras beyond the toolset: input tools return a settled screenshot; `left_click_drag` accepts
+  `duration_ms`/`hold_ms`.
