@@ -43,7 +43,7 @@ describe("parseConfig", () => {
     expect(c.templateVersions).toBe(5);
     expect(c.templateRepo).toBe("deskhand-template");
     expect(c.templateStaleMs).toBe(14 * 86_400_000);
-    expect(c.templateCarryPaths).toEqual([".config/chromium", ".mozilla", ".local/share/keyrings", ".pki"]);
+    expect(c.templateCarryPaths).toEqual([".config/chromium", ".mozilla", ".config/mozilla", ".local/share/keyrings", ".pki"]);
     expect(c.templateAutoRebuild).toBe(true);
     expect(c.bind).toEqual({ host: "127.0.0.1", port: 7480 });
     expect(c.basePath).toBe("");

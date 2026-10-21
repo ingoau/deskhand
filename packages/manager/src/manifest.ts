@@ -106,7 +106,9 @@ try:
                 out["extensions"].append({"browser": "chromium", "id": eid, "name": ext_name(vdir, m.get("name", eid)), "version": m.get("version", "")})
             except Exception as e:
                 out["notes"].append("chromium extension %s unreadable: %s" % (eid, e))
-    for prof in sorted(glob.glob(os.path.join(home, ".mozilla", "firefox", "*", ""))):
+    # Firefox profiles: ~/.mozilla/firefox (classic) or ~/.config/mozilla/firefox (XDG, newer Firefox ESR).
+    ffroots = [os.path.join(home, ".mozilla", "firefox"), os.path.join(home, ".config", "mozilla", "firefox")]
+    for prof in sorted(p for r in ffroots for p in glob.glob(os.path.join(r, "*", ""))):
         pname = os.path.basename(os.path.dirname(prof))
         db = os.path.join(prof, "cookies.sqlite")
         if os.path.isfile(db):

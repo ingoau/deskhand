@@ -183,7 +183,7 @@ Code: `packages/manager/src/templates.ts` (records, rules), `template-ops.ts` (s
   2. the recipe runs with `bash -e` **as the agent user** with the session env (like desktop_exec), or **as root**
      when one of its first five lines is `# deskhand: run-as=root`; time limit `DESKHAND_RECIPE_TIMEOUT` (20m);
   3. quiesce; then the snapshot's non-scriptable state is copied from the old version's image over the same paths
-     (`DESKHAND_TEMPLATE_CARRY`, default `~/.config/chromium`, `~/.mozilla`, `~/.local/share/keyrings`, `~/.pki`:
+     (`DESKHAND_TEMPLATE_CARRY`, default `~/.config/chromium`, `~/.mozilla`, `~/.config/mozilla`, `~/.local/share/keyrings`, `~/.pki`:
      browser profiles with cookies, local storage, sessions, saved site data and browser-installed extensions,
      the keyring and the NSS cert store). Paths the old image lacks are left as the recipe made them;
   4. manifest, commit as the next version (same description and recipe, `rebuiltFrom`, saved by

@@ -224,7 +224,7 @@ describe("templates (fake runtime)", () => {
     const recipeRun = runtime.execCalls.find((c) => c.cmd.join(" ").includes("deskhand-recipe.sh"));
     expect(recipeRun?.user).toBe("root");
     const copy = runtime.copies.find((c) => c.image === "deskhand-template-unit:shop-v5");
-    expect(copy?.paths).toEqual(["/home/agent/.config/chromium", "/home/agent/.mozilla", "/home/agent/.local/share/keyrings", "/home/agent/.pki"]);
+    expect(copy?.paths).toEqual(["/home/agent/.config/chromium", "/home/agent/.mozilla", "/home/agent/.config/mozilla", "/home/agent/.local/share/keyrings", "/home/agent/.pki"]);
     // The build desktop is gone.
     expect((await api(t, "GET", "/api/desktops")).data.desktops.filter((d: { title: string }) => d.title?.startsWith("rebuild template"))).toEqual([]);
     const notes = (await api(t, "GET", "/api/templates/notes")).data;

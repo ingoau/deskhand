@@ -121,7 +121,7 @@ function templateRepo(v: string | undefined): string {
  * profiles (cookies, local storage, saved sessions, extensions installed from the browser), the
  * GNOME keyring and the NSS certificate store. Everything else comes from the new base + recipe.
  */
-export const DEFAULT_CARRY_PATHS = [".config/chromium", ".mozilla", ".local/share/keyrings", ".pki"];
+export const DEFAULT_CARRY_PATHS = [".config/chromium", ".mozilla", ".config/mozilla", ".local/share/keyrings", ".pki"];
 
 function carryPaths(v: string | undefined): string[] {
   if (v === undefined || !v.trim()) return DEFAULT_CARRY_PATHS;
