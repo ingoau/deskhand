@@ -5,6 +5,7 @@
  * /cdp/devtools/* are piped raw. Chromium is launched on demand through deskhand-chromium.
  */
 import { spawn } from "node:child_process";
+import { readFileSync } from "node:fs";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import net from "node:net";
 import type { Duplex } from "node:stream";
@@ -85,7 +86,15 @@ export function ensureChromium(timeoutMs = 20_000): Promise<void> {
         // The port opens slightly before /json/version answers.
         try {
           const r = await cdpGet("/json/version", "GET", 1000);
-          if (r.status === 200) return;
+          if (r.status === 200) {
+            try {
+              const sb = readFileSync(`/run/user/${agentUser().uid}/deskhand-chromium-sandbox`, "utf8").trim();
+              if (sb === "off") log.warn("chromium started with --no-sandbox; start the container with chrome-seccomp.json (and apparmor=unconfined) to enable Chrome's sandbox");
+            } catch {
+              /* started by something else */
+            }
+            return;
+          }
         } catch {
           /* not yet */
         }
