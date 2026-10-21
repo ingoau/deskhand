@@ -1,6 +1,6 @@
 /** The manager's implementation of the MCP package's backend interface. */
 import type { Logger } from "pino";
-import { DeskhandError, type TemplateDescription } from "@deskhand/shared";
+import { DAEMON_API_VERSION, DeskhandError, type TemplateDescription } from "@deskhand/shared";
 import type { DesktopRef, HumanWaitResult, McpBackend, Principal as McpPrincipal, ResolvedDesktop, SessionInfo, StartOptions } from "@deskhand/mcp";
 import type { Config } from "./config.js";
 import type { DB } from "./db.js";
@@ -135,6 +135,13 @@ export class ManagerMcpBackend implements McpBackend {
     if (restart) {
       notes.push(restart);
       fresh = true;
+    }
+    const live = this.desktops.liveState(d.id);
+    if (live && live.apiVersion !== DAEMON_API_VERSION) {
+      throw new DeskhandError(
+        "version_mismatch",
+        `This desktop runs an older desktop image (daemon API v${live.apiVersion}, manager API v${DAEMON_API_VERSION}); ask the user to update it, or start a new desktop with desktop_start.`,
+      );
     }
     const agent = this.desktops.takeAgentNotes(d.id);
     notes.push(...agent.notes);

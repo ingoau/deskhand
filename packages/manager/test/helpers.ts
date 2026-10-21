@@ -10,18 +10,28 @@ import { parseConfig } from "../src/config.js";
 import { FakeRuntime } from "../src/runtime/fake.js";
 import type { Runtime } from "../src/runtime/types.js";
 
-/** Host ports reserved for these tests: 17200-17249 for managers (17250-17299 for fake daemons). */
+const usedPorts = new Set<number>();
+
+/**
+ * Host ports reserved for these tests: 17200-17249 for managers (17250-17299 for fake daemons).
+ * Ports are not reused within a test file, so a client's pooled keep-alive socket to a closed
+ * manager is never mistaken for a connection to a new one.
+ */
 export async function freePort(lo = 17200, hi = 17249): Promise<number> {
   const span = hi - lo + 1;
   const start = Math.floor(Math.random() * span);
   for (let i = 0; i < span; i++) {
     const port = lo + ((start + i) % span);
+    if (usedPorts.has(port) && usedPorts.size < span) continue;
     const ok = await new Promise<boolean>((resolve) => {
       const s = net.createServer();
       s.once("error", () => resolve(false));
       s.listen(port, "127.0.0.1", () => s.close(() => resolve(true)));
     });
-    if (ok) return port;
+    if (ok) {
+      usedPorts.add(port);
+      return port;
+    }
   }
   throw new Error("no free test port in range");
 }

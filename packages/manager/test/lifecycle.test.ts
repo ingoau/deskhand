@@ -110,6 +110,39 @@ describe("desktop lifecycle (fake runtime)", () => {
     fs.rmSync(dataDir, { recursive: true, force: true });
   });
 
+  it("resumes an MCP session after a manager restart, keeping its desktops", async () => {
+    const runtime = new FakeRuntime({ lockWaitMs: 500 });
+    cleanup.push(() => runtime.destroy());
+    const dataDir = tmpDir();
+    cleanup.push(async () => fs.rmSync(dataDir, { recursive: true, force: true }));
+    const t1 = await startManager({ runtime, dataDir });
+    const a = await connectMcp(t1.url, t1.token);
+    const id = /Desktop (\w+) is ready/.exec(textOf(await a.client.callTool({ name: "desktop_start", arguments: {} })))![1]!;
+    const sessionId = a.transport.sessionId!;
+    await t1.close({ keepData: true });
+    expect(runtime.containers.size).toBe(1); // ephemeral desktops survive a manager restart
+
+    const t2 = await manager({ runtime, dataDir });
+    const { StreamableHTTPClientTransport } = await import("@modelcontextprotocol/sdk/client/streamableHttp.js");
+    const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+    const transport = new StreamableHTTPClientTransport(new URL(`${t2.url}/mcp`), { sessionId, requestInit: { headers: { Authorization: `Bearer ${t1.token}` } } });
+    const client = new Client({ name: "resumed", version: "1" });
+    await client.connect(transport);
+    const list = JSON.parse(textOf(await client.callTool({ name: "desktop_list", arguments: {} })));
+    expect(list.map((d: { id: string }) => d.id)).toEqual([id]);
+    const shot = await client.callTool({ name: "screenshot", arguments: {} });
+    expect(shot.isError).toBeFalsy();
+    // Another token cannot take over the session.
+    const other = await fetch(`${t2.url}/mcp`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${t2.token}`, "mcp-session-id": sessionId, "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+    });
+    expect(other.status).toBe(404);
+    await transport.terminateSession();
+    await waitFor(() => t2.m.desktops.get(id) === undefined, { what: "removed on session end" });
+  });
+
   it("stops idle desktops, and the next tool call restarts them with a note", async () => {
     const t = await manager({ env: { DESKHAND_IDLE_TIMEOUT: "600ms" } });
     const { client } = await connectMcp(t.url, t.token);

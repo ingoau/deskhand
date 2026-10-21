@@ -47,6 +47,7 @@ export class McpService {
   private readonly timer: NodeJS.Timeout;
   private readonly unsubscribe: () => void;
   private closed = false;
+  private readonly cleanups = new Set<Promise<void>>();
 
   constructor(
     private readonly backend: McpBackend,
@@ -111,7 +112,9 @@ export class McpService {
         this.backend.sessionOpened(session.info);
       },
       onsessionclosed: (id) => {
-        void this.endSession(id, "deleted");
+        const p = this.endSession(id, "deleted");
+        this.cleanups.add(p);
+        void p.finally(() => this.cleanups.delete(p));
       },
     });
     const server = this.createServer(() => session);
@@ -210,6 +213,7 @@ export class McpService {
     this.closed = true;
     clearInterval(this.timer);
     this.unsubscribe();
+    await Promise.allSettled([...this.cleanups]);
     for (const id of [...this.sessions.keys()]) await this.endSession(id, "shutdown");
   }
 }

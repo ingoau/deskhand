@@ -13,7 +13,7 @@ export default defineConfig({
   test: {
     testTimeout: 30_000,
     hookTimeout: 120_000,
-    // Docker tests share one engine; run their files one at a time.
-    fileParallelism: !process.argv.some((a) => a.includes("test/docker")),
+    // Files run one at a time: they share the 17200-17299 port range and (for test:docker) one engine.
+    fileParallelism: false,
   },
 });
