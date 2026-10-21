@@ -5,7 +5,7 @@ import path from "node:path";
 import { pino } from "pino";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { createManager, type Manager } from "../src/app.js";
+import { createManager, type Manager, type ManagerDeps } from "../src/app.js";
 import { parseConfig } from "../src/config.js";
 import { FakeRuntime } from "../src/runtime/fake.js";
 import type { Runtime } from "../src/runtime/types.js";
@@ -64,7 +64,7 @@ export const FAST_ENV: Record<string, string> = {
 };
 
 export async function startManager(
-  opts: { env?: Record<string, string>; runtime?: Runtime; dataDir?: string; fake?: ConstructorParameters<typeof FakeRuntime>[0] } = {},
+  opts: { env?: Record<string, string>; runtime?: Runtime; dataDir?: string; fake?: ConstructorParameters<typeof FakeRuntime>[0]; browser?: ManagerDeps["browser"] } = {},
 ): Promise<TestManager> {
   const dataDir = opts.dataDir ?? tmpDir();
   const docker = opts.env?.DESKHAND_RUNTIME === "docker";
@@ -77,7 +77,7 @@ export async function startManager(
     // Test files run in parallel: another one may grab the port between the check and the bind.
     port = await freePort();
     cfg = parseConfig({ ...env0, DESKHAND_BIND: `127.0.0.1:${port}` });
-    const candidate = await createManager(cfg, { runtime, logger: pino({ level: env0.DESKHAND_LOG_LEVEL }) });
+    const candidate = await createManager(cfg, { runtime, logger: pino({ level: env0.DESKHAND_LOG_LEVEL }), browser: opts.browser });
     try {
       await candidate.listen();
       m = candidate;

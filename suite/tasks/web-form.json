@@ -1,0 +1,62 @@
+{
+  "id": "web-form",
+  "title": "Web form: an agent fills and submits a form through browser_* tools in the desktop's visible Chromium",
+  "about": [
+    "Covers plan phase 3 (Beyond pixels). The agent gets a desktop, opens the contact form test page that ships in the desktop image, fills every field and submits it.",
+    "The submitted values are verified inside the desktop (Chromium's open page, read through its container-local debugging port), not taken from the agent's answer. The dashboard thumbnail is polled while the agent works.",
+    "The desktop is persistent and named so the checks can run after the session; cleanup removes it. Makes real model calls, so it runs on demand, not in CI."
+  ],
+  "phase": 3,
+  "fixtures": {},
+  "agents": [
+    {
+      "id": "filler",
+      "model": "claude-sonnet-5-5",
+      "allowedTools": ["mcp__deskhand__*"],
+      "timeoutMinutes": 10,
+      "prompt": "You have a Linux desktop through the deskhand MCP tools. First call desktop_start with name \"suite-web-form\" and persistent true (the user will check the desktop afterwards, so do not call desktop_stop). Then, in that desktop's browser, open file:///opt/deskhand/testpages/form.html and fill in the contact form: Full name \"Grace Hopper\", Email \"grace@navy.example\", Country \"New Zealand\", Plan \"Team\", tick the newsletter checkbox, Message \"Ship it on Tuesday\". The user authorises you to submit this test form: click \"Send message\". Finally tell me exactly what the result page shows."
+    }
+  ],
+  "checks": [
+    {
+      "id": "used-browser-tools",
+      "after": "filler",
+      "expect": "the agent worked through browser_* tools (navigate, snapshot, then fill/type/select and click) rather than pixel clicks",
+      "transcript": "filler",
+      "assert": "['mcp__deskhand__browser_navigate', 'mcp__deskhand__browser_snapshot', 'mcp__deskhand__browser_click'].every(n => toolCalls.some(c => c.name === n)) && toolCalls.some(c => /browser_(fill_form|type|select_option)$/.test(c.name))"
+    },
+    {
+      "id": "submitted-inside-desktop",
+      "after": "filler",
+      "expect": "inside the desktop, Chromium's page is form-done.html with exactly the requested values (the country is the option value nz)",
+      "desktopExec": { "desktopName": "suite-web-form", "command": "curl -s http://127.0.0.1:9222/json/list", "via": "docker exec -u agent <container> (or desktop_exec from a runner session)" },
+      "assert": "const p = JSON.parse(stdout).find(p => p.type === 'page' && p.url.includes('form-done.html')); const v = Object.fromEntries(new URL(p.url).searchParams); JSON.stringify(v) === JSON.stringify({ name: 'Grace Hopper', email: 'grace@navy.example', country: 'nz', plan: 'team', newsletter: 'yes', message: 'Ship it on Tuesday' })"
+    },
+    {
+      "id": "visible-in-dashboard",
+      "after": "filler",
+      "expect": "while the agent worked, GET /api/desktops/{id}/thumbnail returned images (the same screen the user watches); keep the thumbnails with the results",
+      "monitor": "poll GET /api/desktops/{id}/thumbnail every 2 s while the agent runs",
+      "assert": "thumbnails.filter(t => t.status === 200 && t.contentType.startsWith('image/')).length >= 2"
+    },
+    {
+      "id": "logged",
+      "after": "filler",
+      "expect": "the action log has the browser calls with outcome ok, the token's actor name, and a screenshot for the click",
+      "request": "GET /api/desktops/{id}/log",
+      "assert": "['browser_navigate', 'browser_click'].every(t => body.entries.some(e => e.tool === t && e.outcome === 'ok'))"
+    },
+    {
+      "id": "answer",
+      "after": "filler",
+      "optional": true,
+      "expect": "the agent's answer reports 'Form received' and the values",
+      "assert": "finalText(filler).includes('Form received') && finalText(filler).includes('Grace Hopper')"
+    }
+  ],
+  "cleanup": ["DELETE /api/desktops/{id} (the persistent suite-web-form desktop)"],
+  "reference_run": {
+    "date": "2026-10-22",
+    "result": "pass (claude-sonnet-5-5, 11 turns, 29 s, $0.18): navigate, snapshot, fill_form (first try used `ref` instead of `target`, the schema error made it retry), click; Chromium inside the desktop showed form-done.html?name=Grace+Hopper&email=grace%40navy.example&country=nz&plan=team&newsletter=yes&message=Ship+it+on+Tuesday; 7 thumbnails (200 image/webp) captured mid-run show the filled form."
+  }
+}

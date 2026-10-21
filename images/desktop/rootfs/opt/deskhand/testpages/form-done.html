@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Form received</title><link rel="stylesheet" href="style.css">
+<style> table { border-collapse: collapse; margin-top: 12px; } td, th { border: 1px solid #ccc; padding: 6px 12px; text-align: left; } </style></head>
+<body>
+<h1>Form received</h1>
+<p class="hint">These values were submitted. They are also kept in localStorage (<code>deskhand-form-submissions</code>) and in <code>window.deskhand.result</code>.</p>
+<table id="values"><tbody></tbody></table>
+<script src="common.js"></script>
+<script>
+  const values = Object.fromEntries(new URLSearchParams(location.search));
+  const body = document.querySelector("#values tbody");
+  for (const [k, v] of Object.entries(values)) {
+    const tr = document.createElement("tr");
+    const th = document.createElement("th");
+    const td = document.createElement("td");
+    th.textContent = k;
+    td.textContent = v;
+    tr.append(th, td);
+    body.append(tr);
+  }
+  window.deskhand.result = values;
+  try {
+    const key = "deskhand-form-submissions";
+    const all = JSON.parse(localStorage.getItem(key) || "[]");
+    all.push({ at: new Date().toISOString(), values });
+    localStorage.setItem(key, JSON.stringify(all.slice(-20)));
+  } catch (e) { /* file:// storage may be unavailable */ }
+</script>
+</body>
+</html>

@@ -1,0 +1,49 @@
+{
+  "id": "native-edit-uitree",
+  "title": "Native-app edit via ui_tree: an agent edits a file in a GTK text editor, finding where to click from the accessibility tree",
+  "about": [
+    "Covers plan phase 3 (Beyond pixels). The agent launches Mousepad (GTK) on a prepared file with desktop_exec, reads ui_tree to find the text area and menus, clicks the @x,y points it reports, types a new line and saves through the editor.",
+    "Verified inside the desktop: the file's contents on disk, and that the line was not written by a shell command. A FeatherPad (Qt) variant is the same task with app \"featherpad\".",
+    "The desktop is persistent and named so the checks can run after the session; cleanup removes it. Makes real model calls, so it runs on demand, not in CI."
+  ],
+  "phase": 3,
+  "fixtures": {},
+  "agents": [
+    {
+      "id": "editor",
+      "model": "claude-sonnet-5-5",
+      "allowedTools": ["mcp__deskhand__*"],
+      "timeoutMinutes": 10,
+      "prompt": "You have a Linux desktop through the deskhand MCP tools. First call desktop_start with name \"suite-native-edit\" and persistent true (the user will check the desktop afterwards, so do not call desktop_stop). Prepare the file with desktop_exec: printf 'buy milk\\nwater plants\\n' > ~/Documents/todo.txt . Then open it in the Mousepad text editor (desktop_exec: mousepad ~/Documents/todo.txt &) and, working in the editor itself (not with shell commands), add a third line 'call the plumber' at the end and save it with the editor. Use ui_tree to find where to click. Tell me when the file is saved."
+    }
+  ],
+  "checks": [
+    {
+      "id": "used-ui-tree",
+      "after": "editor",
+      "expect": "the agent called ui_tree and clicked at least once (pixel input) after it, and no desktop_exec command wrote the new line",
+      "transcript": "editor",
+      "assert": "toolCalls.some(c => c.name === 'mcp__deskhand__ui_tree') && toolCalls.some(c => /__(left_click|double_click|triple_click)$/.test(c.name)) && !toolCalls.some(c => c.name === 'mcp__deskhand__desktop_exec' && /plumber/.test(c.input.command))"
+    },
+    {
+      "id": "saved-inside-desktop",
+      "after": "editor",
+      "expect": "inside the desktop, ~/Documents/todo.txt holds the two original lines and 'call the plumber' as the third",
+      "desktopExec": { "desktopName": "suite-native-edit", "command": "cat /home/agent/Documents/todo.txt", "via": "docker exec -u agent <container> (or desktop_exec from a runner session)" },
+      "assert": "stdout.split('\\n').filter(Boolean).join('|') === 'buy milk|water plants|call the plumber'"
+    },
+    {
+      "id": "editor-shows-saved",
+      "after": "editor",
+      "optional": true,
+      "expect": "the Mousepad window title has no unsaved-changes marker (*) — read with wmctrl -l inside the desktop",
+      "desktopExec": { "desktopName": "suite-native-edit", "command": "wmctrl -l" },
+      "assert": "/ todo.txt - Mousepad/.test(stdout) && !/\\*~?\\/?.*todo.txt - Mousepad/.test(stdout)"
+    }
+  ],
+  "cleanup": ["DELETE /api/desktops/{id} (the persistent suite-native-edit desktop)"],
+  "reference_run": {
+    "date": "2026-10-22",
+    "result": "pass (claude-sonnet-5-5, 8 turns, 20 s, $0.17): desktop_exec prepared the file and launched Mousepad, ui_tree, left_click at the text area's @640,406 (a first try with x/y strings got invalid_argument), type 'call the plumber', ctrl+s; inside the desktop todo.txt = 'buy milk\\nwater plants\\ncall the plumber' and the title lost its '*'."
+  }
+}
