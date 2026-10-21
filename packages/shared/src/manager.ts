@@ -113,6 +113,7 @@ export const LogEntry = z.object({
   error: z.object({ code: z.string(), message: z.string() }).nullable(),
   /** Token name or "dashboard". */
   actor: z.string().nullable(),
+  /** Session label like DesktopSummary.session (`claude-laptop/9f2c`); null for dashboard actions. */
   session: z.string().nullable(),
   durationMs: z.number().int().nullable(),
   overlays: z.array(Overlay),

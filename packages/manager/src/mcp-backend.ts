@@ -269,7 +269,8 @@ export class ManagerMcpBackend implements McpBackend {
       outcome: rec.outcome,
       error: rec.error,
       actor: rec.actor,
-      session: rec.sessionId,
+      // Same label the dashboard shows on tiles (`token/abcd`), not the raw session id.
+      session: rec.sessionId && rec.actor ? sessionLabel({ id: rec.sessionId, principal: { name: rec.actor } }) : rec.sessionId,
       durationMs: rec.durationMs,
       overlays: rec.overlays,
       screenshot: rec.screenshot,
