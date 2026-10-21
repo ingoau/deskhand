@@ -48,6 +48,8 @@ class Ctx:
     out: Path
     grace_s: int
     verbose: bool
+    desktop_image: str = ""
+    network: str = "deskhand-desktops"
     checks: list[dict[str, Any]] = field(default_factory=list)
 
     # ---------------------------------------------------------------- manager API
@@ -61,9 +63,17 @@ class Ctx:
         return self.api("GET", f"/api/desktops/{desktop}/log?limit=500")["entries"]
 
     # ---------------------------------------------------------------- checks
-    def check(self, task: str, name: str, ok: bool, detail: Any = None) -> bool:
-        self.checks.append({"task": task, "check": name, "ok": bool(ok), "detail": detail})
-        mark = "PASS" if ok else "FAIL"
+    def api_raw(self, method: str, path: str) -> tuple[int, str, bytes]:
+        req = urllib.request.Request(self.url + path, method=method, headers={"authorization": f"Bearer {self.token}"})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                return r.status, r.headers.get("content-type", ""), r.read()
+        except urllib.error.HTTPError as e:
+            return e.code, e.headers.get("content-type", ""), e.read()
+
+    def check(self, task: str, name: str, ok: bool, detail: Any = None, optional: bool = False) -> bool:
+        self.checks.append({"task": task, "check": name, "ok": bool(ok), "detail": detail, "optional": optional})
+        mark = "PASS" if ok else ("WARN" if optional else "FAIL")
         print(f"  [{mark}] {name}" + (f" — {detail}" if detail is not None and (self.verbose or not ok) else ""), flush=True)
         return bool(ok)
 
@@ -85,6 +95,10 @@ class Monitor(threading.Thread):
         self.stop_flag = threading.Event()
         self.docker = shutil.which("docker") is not None
         self.lock = threading.Lock()
+        # While set, every running desktop's dashboard thumbnail is fetched every 2 s (tasks' "monitor" checks).
+        self.thumbs_on = threading.Event()
+        self.thumbs: dict[str, list[dict[str, Any]]] = {}
+        self._tick = 0
 
     def run(self) -> None:
         while not self.stop_flag.is_set():
@@ -103,10 +117,33 @@ class Monitor(threading.Thread):
                     for did, rec in self.seen.items():
                         if did not in live and "gone_at" not in rec:
                             rec["gone_at"] = now
+                self._tick += 1
+                if self.thumbs_on.is_set() and self._tick % 2 == 0:
+                    for did, d in live.items():
+                        if d.get("status") == "running":
+                            self.thumb(did)
             except Exception as e:  # keep polling through manager hiccups
                 if self.ctx.verbose:
                     print(f"  monitor: {e}", file=sys.stderr)
             self.stop_flag.wait(1.0)
+
+    def thumb(self, did: str) -> None:
+        status, ctype, data = self.ctx.api_raw("GET", f"/api/desktops/{did}/thumbnail")
+        lst = self.thumbs.setdefault(did, [])
+        lst.append({"at": time.time(), "status": status, "contentType": ctype, "bytes": len(data)})
+        if status == 200 and len(lst) <= 8:
+            d = self.ctx.out / "thumbs"
+            d.mkdir(exist_ok=True)
+            (d / f"{did}-{len(lst):02d}.webp").write_bytes(data)
+
+    def created_between(self, t0: float, t1: float) -> list[str]:
+        with self.lock:
+            return [i for i, r in sorted(self.seen.items(), key=lambda kv: kv[1]["first_seen"]) if t0 - 1 <= r["first_seen"] <= t1 + 1]
+
+    def by_title(self, title: str) -> str | None:
+        with self.lock:
+            hits = [i for i, r in sorted(self.seen.items(), key=lambda kv: kv[1]["first_seen"]) if r["summary"].get("title") == title]
+        return hits[-1] if hits else None
 
     @staticmethod
     def inspect(name: str) -> dict[str, Any] | None:
@@ -152,7 +189,7 @@ class Run:
     messages: list[dict[str, Any]] = field(default_factory=list)
 
 
-def start_claude(ctx: Ctx, name: str, prompt: str, tools: str, allowed: str) -> Run:
+def start_claude(ctx: Ctx, name: str, prompt: str, tools: str, allowed: str, model: str | None = None) -> Run:
     cwd = Path(tempfile.mkdtemp(prefix=f"deskhand-suite-{name}-"))
     transcript = ctx.out / f"{name}.jsonl"
     cmd = [
@@ -160,7 +197,7 @@ def start_claude(ctx: Ctx, name: str, prompt: str, tools: str, allowed: str) -> 
         "--mcp-config", ctx.mcp_config(), "--strict-mcp-config",
         "--tools", tools,
         "--allowedTools", allowed,
-        "--model", ctx.model,
+        "--model", model or ctx.model,
         "--max-budget-usd", ctx.budget,
         "--no-session-persistence",
         "--output-format", "stream-json", "--verbose",
@@ -357,8 +394,215 @@ def task_contract(ctx: Ctx, mon: Monitor) -> None:
     ctx.check(T, "Claude Code lists every computer_toolset_20260801 tool", want <= names, sorted(want - names))
 
 
-TASKS: dict[str, Callable[[Ctx, Monitor], None]] = {"contract": task_contract, "two_sessions": task_two_sessions, "subagents": task_subagents}
-SETS = {"phase2": ["contract", "two_sessions", "subagents"]}
+# ---------------------------------------------------------------- declarative tasks (suite/tasks/*.json)
+#
+# A task file has fixtures (containers the agents need), agents (headless claude sessions, run in order)
+# and checks (each runs after its agent). A check gathers data — the agent's transcript (`toolCalls`), a
+# manager request (`body`), a fixture request, a command inside a desktop (`stdout`, via docker exec), the
+# dashboard thumbnails polled during the run (`thumbnails`) — and its `assert` is a JavaScript expression
+# over that data. Asserts run in a throwaway node container (no Node on the host); optional checks warn.
+
+NODE_IMAGE = os.environ.get("DESKHAND_SUITE_NODE_IMAGE", "node:24-bookworm")
+EVAL_JS = r"""
+const c = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+const { toolCalls, stdout, body, thumbnails, saved } = c;
+const finalText = (id) => c.finalTexts[id] ?? '';
+const fixture = (name, req) => c.fixtures[name + ' ' + req];
+let out;
+try { out = { ok: !!eval(c.assert) }; } catch (e) { out = { ok: false, error: String(e) }; }
+console.log(JSON.stringify(out));
+"""
+
+
+def js_assert(expr: str, data: dict[str, Any]) -> tuple[bool, str | None]:
+    p = subprocess.run(
+        ["docker", "run", "--rm", "-i", "--network", "none", "--label", "owner=deskhand-dev", NODE_IMAGE, "node", "-e", EVAL_JS],
+        input=json.dumps({**data, "assert": expr}, default=str), capture_output=True, text=True, timeout=180,
+    )
+    try:
+        r = json.loads(p.stdout.strip().splitlines()[-1])
+        return bool(r["ok"]), r.get("error")
+    except (IndexError, json.JSONDecodeError, KeyError):
+        return False, (p.stderr or p.stdout)[-300:]
+
+
+def subst(v: str, ctx: Ctx) -> str:
+    return v.replace("${DESKHAND_DESKTOP_IMAGE}", ctx.desktop_image).replace("${DESKHAND_NETWORK}", ctx.network)
+
+
+def docker_exec(container: str, cmd: str, user: str | None = None, timeout: int = 60) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["docker", "exec", *(["-u", user] if user else []), container, "bash", "-lc", cmd], capture_output=True, text=True, timeout=timeout)
+
+
+def start_fixture(ctx: Ctx, task: str, name: str, fx: dict[str, Any]) -> str:
+    if "${DESKHAND_DESKTOP_IMAGE}" in json.dumps(fx) and not ctx.desktop_image:
+        raise RuntimeError("this task's fixture needs --desktop-image / DESKHAND_DESKTOP_IMAGE (the manager's desktop image)")
+    cname = f"deskhand-suite-{task}-{name}-{os.urandom(3).hex()}"
+    cmd = ["docker", "run", "-d", "--rm", "--name", cname, "--label", "owner=deskhand-dev"]
+    for k, v in fx.get("labels", {}).items():
+        cmd += ["--label", f"{k}={v}"]
+    if fx.get("network"):
+        cmd += ["--network", subst(fx["network"], ctx)]
+        for a in fx.get("aliases", []):
+            cmd += ["--network-alias", a]
+    for m in fx.get("mounts", []):
+        src = (HERE.parent / m["source"]).resolve()
+        cmd += ["-v", f"{src}:{m['target']}:{'ro' if m.get('readOnly') else 'rw'}"]
+    ep = fx.get("entrypoint") or []
+    if ep:
+        cmd += ["--entrypoint", ep[0]]
+    cmd += [subst(fx["image"], ctx), *ep[1:]]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError(f"fixture {name} did not start: {r.stderr.strip()[-300:]}")
+    m = re.search(r"http://127\.0\.0\.1(/\S*)", fx.get("ready", ""))
+    path = m.group(1) if m else "/"
+    for _ in range(120):
+        code = docker_exec(cname, f"curl -s -o /dev/null -w '%{{http_code}}' http://127.0.0.1{path}").stdout.strip()
+        if code and code != "000":
+            break
+        time.sleep(0.5)
+    print(f"  fixture {name}: {cname}", flush=True)
+    return cname
+
+
+def fixture_get(container: str, request: str) -> Any:
+    method, path = request.split(" ", 1)
+    out = docker_exec(container, f"curl -s -X {method} http://127.0.0.1{path}").stdout
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        return out
+
+
+def desktop_container(ctx: Ctx, mon: Monitor, did: str) -> str:
+    """Container of a desktop, started first if it was stopped (persistent desktops after their session)."""
+    rec = mon.get(did) or {}
+    name = rec.get("summary", {}).get("name")
+    if not name:
+        name = ctx.api("GET", f"/api/desktops/{did}")["name"]
+    st = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", name], capture_output=True, text=True).stdout.strip()
+    if st != "true":
+        ctx.api("POST", f"/api/desktops/{did}/start")
+    return name
+
+
+def run_json_task(ctx: Ctx, mon: Monitor, spec: dict[str, Any]) -> None:
+    T = spec["id"]
+    fixtures: dict[str, str] = {}
+    runs: dict[str, Run] = {}
+    state: dict[str, Any] = {"saved": None}
+    t_start = time.time()
+
+    def agent_desktop(agent: str, chk: dict[str, Any]) -> str | None:
+        run = runs[agent]
+        name = (chk.get("desktopExec") or {}).get("desktopName")
+        if not name:
+            m = re.search(r'name \\?"([^"\\]+)\\?"', next(a["prompt"] for a in spec["agents"] if a["id"] == agent))
+            name = m.group(1) if m else None
+        hit = mon.by_title(name) if name else None
+        if hit:
+            return hit
+        made = mon.created_between(run.started, run.ended or time.time())
+        return made[0] if made else None
+
+    def resolve(path: str, agent: str, chk: dict[str, Any]) -> str:
+        if "{id}" in path:
+            did = agent_desktop(agent, chk)
+            if not did:
+                raise RuntimeError("no desktop found for {id}")
+            path = path.replace("{id}", did)
+        if "{saved.name}" in path:
+            if not state["saved"]:
+                raise RuntimeError("no saved template yet for {saved.name}")
+            path = path.replace("{saved.name}", state["saved"]["name"])
+        return path
+
+    def run_check(chk: dict[str, Any]) -> None:
+        agent = chk["after"]
+        tr = runs[chk.get("transcript", agent)]
+        data: dict[str, Any] = {
+            "toolCalls": [{"name": u["name"], "input": u["input"] or {}} for u in tool_uses(tr)],
+            "finalTexts": {k: r.final_text for k, r in runs.items()},
+            "saved": state["saved"], "fixtures": {}, "stdout": None, "body": None, "thumbnails": [],
+        }
+        if chk.get("request"):
+            method, path = chk["request"].split(" ", 1)
+            data["body"] = ctx.api(method, resolve(path, agent, chk))
+            if path == "/api/templates" and data["body"]:
+                cands = [t for t in data["body"]["templates"] if t["name"] != "base" and t.get("recentlyChangedByAgent")]
+                if cands:
+                    state["saved"] = data["saved"] = cands[-1]
+        if chk.get("fixtureRequest"):
+            fr = chk["fixtureRequest"]
+            data["body"] = fixture_get(fixtures[fr["fixture"]], fr["request"])
+        for fname, req in re.findall(r"fixture\('([^']+)',\s*'([^']+)'\)", chk.get("assert", "")):
+            data["fixtures"][f"{fname} {req}"] = fixture_get(fixtures[fname], req)
+        if chk.get("desktopExec"):
+            did = agent_desktop(agent, chk)
+            if not did:
+                raise RuntimeError(f"no desktop named {chk['desktopExec'].get('desktopName')}")
+            container = desktop_container(ctx, mon, did)
+            data["stdout"] = docker_exec(container, chk["desktopExec"]["command"], user="agent").stdout
+        if chk.get("monitor"):
+            did = agent_desktop(agent, chk)
+            data["thumbnails"] = mon.thumbs.get(did or "", [])
+        ok, err = js_assert(chk["assert"], data)
+        detail = err or {k: (str(v)[:160] if v is not None else None) for k, v in (("stdout", data["stdout"]), ("body", data["body"])) if v is not None} or None
+        ctx.check(T, f"{chk['id']}: {chk.get('expect', '')}"[:160], ok, detail, optional=bool(chk.get("optional")))
+
+    try:
+        for name, fx in (spec.get("fixtures") or {}).items():
+            fixtures[name] = start_fixture(ctx, T, name, fx)
+        for ag in spec["agents"]:
+            mon.thumbs_on.set()
+            run = start_claude(ctx, f"{T}-{ag['id']}", ag["prompt"], "", " ".join(ag.get("allowedTools", ["mcp__deskhand__*"])), model=ag.get("model"))
+            finish(run, ag.get("timeoutMinutes", 10) * 60)
+            mon.thumbs_on.clear()
+            runs[ag["id"]] = run
+            ctx.check(T, f"agent {ag['id']} finished", run.proc.returncode == 0, run.final_text[-200:])
+            for chk in [c for c in spec.get("checks", []) if c.get("after") == ag["id"]]:
+                try:
+                    run_check(chk)
+                except Exception as e:
+                    ctx.check(T, chk["id"], False, repr(e), optional=bool(chk.get("optional")))
+    finally:
+        mon.thumbs_on.clear()
+        # Cleanup: desktops this task created that are still around (persistent ones), its saved template, fixtures.
+        for did in mon.created_between(t_start, time.time()):
+            if "gone_at" not in (mon.get(did) or {}):
+                try:
+                    ctx.api("DELETE", f"/api/desktops/{did}")
+                except Exception:
+                    pass
+        if state["saved"] and any("{saved.name}" in c for c in spec.get("cleanup", [])):
+            try:
+                ctx.api("DELETE", f"/api/templates/{state['saved']['name']}")
+            except Exception:
+                pass
+        for c in fixtures.values():
+            subprocess.run(["docker", "rm", "-f", c], capture_output=True)
+
+
+def load_json_tasks() -> dict[str, Callable[[Ctx, Monitor], None]]:
+    out: dict[str, Callable[[Ctx, Monitor], None]] = {}
+    for f in sorted((HERE / "tasks").glob("*.json")):
+        spec = json.loads(f.read_text())
+
+        def fn(ctx: Ctx, mon: Monitor, spec: dict[str, Any] = spec) -> None:
+            run_json_task(ctx, mon, spec)
+
+        fn.__doc__ = spec.get("title", spec["id"])
+        out[spec["id"]] = fn
+    return out
+
+
+TASKS: dict[str, Callable[[Ctx, Monitor], None]] = {"contract": task_contract, "two_sessions": task_two_sessions, "subagents": task_subagents, **load_json_tasks()}
+SETS = {
+    "phase2": ["contract", "two_sessions", "subagents"],
+    "phase3": [n for n in TASKS if n in ("web-form", "native-edit-uitree")],
+    "all": list(TASKS),
+}
 
 
 def main() -> int:
@@ -370,6 +614,8 @@ def main() -> int:
     ap.add_argument("--claude", default=os.environ.get("CLAUDE_BIN") or shutil.which("claude") or str(Path.home() / ".local/bin/claude"))
     ap.add_argument("--budget", default=os.environ.get("DESKHAND_SUITE_BUDGET_USD", "3"), help="max USD per claude session")
     ap.add_argument("--grace", type=int, default=int(os.environ.get("DESKHAND_SUITE_GRACE", "90")), help="seconds the manager may take to notice a session ended")
+    ap.add_argument("--desktop-image", default=os.environ.get("DESKHAND_DESKTOP_IMAGE", ""), help="the manager's desktop image (fixtures run on it)")
+    ap.add_argument("--network", default=os.environ.get("DESKHAND_NETWORK", "deskhand-desktops"), help="the manager's desktop network (fixtures join it)")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
     if not args.token:
@@ -384,7 +630,7 @@ def main() -> int:
         return 2
     out = HERE / "results" / datetime.now().strftime("%Y%m%d-%H%M%S")
     out.mkdir(parents=True)
-    ctx = Ctx(url=args.url.rstrip("/"), token=args.token, model=args.model, claude=args.claude, budget=args.budget, out=out, grace_s=args.grace, verbose=args.verbose)
+    ctx = Ctx(url=args.url.rstrip("/"), token=args.token, model=args.model, claude=args.claude, budget=args.budget, out=out, grace_s=args.grace, verbose=args.verbose, desktop_image=args.desktop_image, network=args.network)
     try:
         health = json.loads(urllib.request.urlopen(f"{ctx.url}/healthz", timeout=10).read())
         ctx.api("GET", "/api/desktops")
@@ -405,7 +651,7 @@ def main() -> int:
     mon.join(timeout=5)
     (out / "mcp.json").unlink(missing_ok=True)  # holds the token
     (out / "monitor.json").write_text(json.dumps(mon.seen, indent=1, default=str))
-    failed = [c for c in ctx.checks if not c["ok"]]
+    failed = [c for c in ctx.checks if not c["ok"] and not c.get("optional")]
     (out / "summary.json").write_text(json.dumps({"url": ctx.url, "model": ctx.model, "seconds": round(time.time() - t0), "checks": ctx.checks, "failed": len(failed)}, indent=1, default=str))
     print(f"\n{len(ctx.checks) - len(failed)}/{len(ctx.checks)} checks passed in {time.time() - t0:.0f}s; details in {out}")
     return 1 if failed else 0

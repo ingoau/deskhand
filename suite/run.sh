@@ -3,6 +3,12 @@
 #
 #   suite/run.sh                     # the phase 2 set: contract, two_sessions, subagents
 #   suite/run.sh two_sessions -v     # one task, verbose
+#   suite/run.sh phase3              # web-form, native-edit-uitree (from suite/tasks/*.json)
+#   suite/run.sh all                 # everything, including templated-login
+#
+# Tasks are Python functions in runner.py (phase 2) or declarative files in suite/tasks/*.json (agents,
+# fixtures, checks with JavaScript asserts; asserts run in a throwaway node container, desktopExec checks
+# use `docker exec -u agent` into the desktop container).
 #
 # Needs, on the machine running it: a deskhand manager, the `claude` CLI (logged in), python3, and the docker
 # CLI for container-level checks. The desktops must be able to mount /tmp of this machine, i.e. run this on
@@ -12,6 +18,8 @@
 #   DESKHAND_COMPOSE_PROJECT  a compose project name: a throwaway token is created there and revoked after
 #   DESKHAND_SUITE_MODEL    default claude-sonnet-5-5 (computer use needs it; haiku only for trivial checks)
 #   DESKHAND_SUITE_BUDGET_USD  max spend per claude session (default 3)
+#   DESKHAND_DESKTOP_IMAGE, DESKHAND_NETWORK  the manager's desktop image and network (fixture containers such
+#                           as templated-login's test shop run on that image and join that network)
 #   DESKHAND_SUITE_GRACE    seconds the manager may take to notice a session ended (default 90; Claude Code
 #                           exits without DELETE, so this is DESKHAND_SESSION_DISCONNECT_GRACE + one sweep)
 # Results (transcripts, monitor snapshots, summary.json): suite/results/<timestamp>/.
