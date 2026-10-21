@@ -208,7 +208,8 @@ export function createServer(opts: ServerOptions): http.Server {
       }
       // ------------------------------------------------------------------ cdp (HTTP part)
       if (path === "/cdp" || path.startsWith("/cdp/")) {
-        return await handleCdpHttp(req, res, path.slice(4) || "/json/version", url.searchParams.toString());
+        // Raw query: /json/new?<url> must reach Chromium unchanged.
+        return await handleCdpHttp(req, res, path.slice(4) || "/json/version", url.search.slice(1));
       }
       sendJson(res, 404, { error: { code: "invalid_argument", message: `No route ${method} ${path}.` } });
     } catch (e) {
@@ -226,7 +227,7 @@ export function createServer(opts: ServerOptions): http.Server {
     if (!checkAuth(req.headers.authorization, opts.key())) return reject(401, "unauthorized", "Missing or invalid daemon key.");
     if (url.pathname === "/vnc") return vnc.handleUpgrade(req, socket, head, url.searchParams);
     if (url.pathname.startsWith("/cdp/")) {
-      handleCdpUpgrade(req, socket, head, url.pathname.slice(4), url.searchParams.toString()).catch((e) => {
+      handleCdpUpgrade(req, socket, head, url.pathname.slice(4), url.search.slice(1)).catch((e) => {
         const err = e instanceof DeskhandError ? e : new DeskhandError("internal");
         reject(err.status, err.code, err.message);
       });

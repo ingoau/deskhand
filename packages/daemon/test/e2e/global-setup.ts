@@ -4,7 +4,7 @@
  * the container's IP, which works from the scripts/dev container (host networking) on Linux.
  */
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TestProject } from "vitest/node";
@@ -97,6 +97,14 @@ export default async function setup(project: TestProject) {
     throw e;
   }
   return async () => {
+    // Keep the desktop's logs for debugging (test-results/ is gitignored).
+    try {
+      const dir = resolve(here, "../../test-results");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(resolve(dir, "e2e-desktop.log"), await containerLogs(id, 5000));
+    } catch {
+      /* best effort */
+    }
     if (process.env.DESKHAND_E2E_KEEP === "1") {
       console.log(`keeping container ${id} and network ${netName}`);
       return;

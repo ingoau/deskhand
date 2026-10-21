@@ -26,6 +26,12 @@ export const TIMING = {
   heldMoveStepMs: 8,
   /** Release a button held without left_mouse_up after this long. */
   stuckButtonMs: 30_000,
+  /**
+   * Separate click actions must not merge into one multi-click: if the previous click ended less
+   * than this long ago near the same spot, wait out the rest (GTK/Chromium double-click time).
+   */
+  multiClickIntervalMs: 500,
+  multiClickDistancePx: 8,
 };
 
 export class InputEngine {
@@ -37,6 +43,7 @@ export class InputEngine {
   /** Notes for the next response (e.g. "a stuck button was released"). */
   private pendingNotes: string[] = [];
   private stuckTimer: NodeJS.Timeout | null = null;
+  private lastClick: { at: number; pos: Point } | null = null;
 
   constructor(
     private readonly x: XConn,
@@ -196,6 +203,12 @@ export class InputEngine {
         let modCodes: number[] = [];
         try {
           if (target && (await this.moveTo(target, signal))) await sleep(TIMING.clickHoverMs, signal);
+          const pos = target ?? (await this.x.pointer());
+          if (this.lastClick) {
+            const since = performance.now() - this.lastClick.at;
+            const near = Math.hypot(pos[0] - this.lastClick.pos[0], pos[1] - this.lastClick.pos[1]) <= TIMING.multiClickDistancePx;
+            if (near && since < TIMING.multiClickIntervalMs) await sleep(TIMING.multiClickIntervalMs - since, signal);
+          }
           modCodes = await this.pressSyms(mods);
           for (let i = 0; i < count; i++) {
             if (i > 0) await sleep(TIMING.multiClickGapMs, signal);
@@ -203,6 +216,7 @@ export class InputEngine {
             await sleep(TIMING.clickHoldMs, signal);
             this.buttonUp(button);
           }
+          this.lastClick = { at: performance.now(), pos };
         } finally {
           if (this.heldButtons.has(button)) this.buttonUp(button);
           this.releaseCodes(modCodes);

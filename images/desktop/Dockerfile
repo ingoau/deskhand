@@ -71,6 +71,7 @@ COPY packages/daemon/helpers/uitree.py /opt/deskhand/uitree.py
 RUN chmod 0755 /usr/local/bin/deskhand-* /usr/local/lib/deskhand/* \
  && ln -sf /usr/local/bin/deskhand-chromium /usr/local/bin/chromium \
  && sed -i -e 's|<number>4</number>|<number>1</number>|' -e '\|/var/lib/openbox/debian-menu.xml|d' /etc/xdg/openbox/rc.xml \
+ && printf 'XTerm*faceName: Noto Sans Mono\nXTerm*faceSize: 10\nXTerm*allowTitleOps: true\n' >> /etc/X11/app-defaults/XTerm \
  && update-alternatives --install /usr/bin/x-www-browser x-www-browser /usr/local/bin/deskhand-chromium 300 \
  && update-desktop-database /usr/local/share/applications \
  && /usr/local/lib/deskhand/gen-versions "${DESKHAND_VERSION}" > /etc/deskhand-versions.json \
