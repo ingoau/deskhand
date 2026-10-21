@@ -15,10 +15,18 @@ export function Grid() {
   const [tab, setTab] = useState<FilterTab>(() => ((FILTER_TABS as string[]).includes(params.get("tab") ?? "") ? (params.get("tab") as FilterTab) : "all"));
   const [query, setQuery] = useState(() => params.get("q") ?? "");
   useEffect(() => {
-    const n = new URLSearchParams();
-    if (tab !== "all") n.set("tab", tab);
-    if (query) n.set("q", query);
-    setParams(n, { replace: true });
+    // Keep other params (e.g. ?login=expired, handled by the shell).
+    setParams(
+      (prev) => {
+        const n = new URLSearchParams(prev);
+        if (tab !== "all") n.set("tab", tab);
+        else n.delete("tab");
+        if (query) n.set("q", query);
+        else n.delete("q");
+        return n.toString() === prev.toString() ? prev : n;
+      },
+      { replace: true },
+    );
   }, [tab, query, setParams]);
 
   const list = desktops ?? [];

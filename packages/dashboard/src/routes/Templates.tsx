@@ -17,8 +17,26 @@ export function Markers({ t, className }: { t: TemplateSummary; className?: stri
           changed by agent
         </span>
       ) : null}
-      {t.stale ? <span className="text-amber/80">stale</span> : null}
-      {t.outdatedBase ? <span className="text-red/90">outdated base</span> : null}
+      {t.stale ? (
+        <span className="text-amber/80" title={t.staleReason ?? undefined} data-testid="marker-stale">
+          stale{t.staleReason ? ` · ${t.staleReason}` : ""}
+        </span>
+      ) : null}
+      {t.outdatedBase ? (
+        <span className="text-red/90" title={t.currentBaseVersion ? `built on ${t.baseVersion ?? "?"}; the manager now runs ${t.currentBaseVersion}` : undefined}>
+          outdated base
+        </span>
+      ) : null}
+      {t.rebuild && (t.rebuild.status === "queued" || t.rebuild.status === "running") ? (
+        <span className="text-blue" data-testid="marker-rebuild">
+          rebuild {t.rebuild.status}…
+        </span>
+      ) : null}
+      {t.rebuild?.status === "failed" ? (
+        <span className="text-red" title={t.rebuild.error ?? undefined} data-testid="marker-rebuild">
+          rebuild failed
+        </span>
+      ) : null}
       {t.currentVersion !== t.latestVersion ? (
         <span className="text-violet">
           rolled back · latest v{t.latestVersion}

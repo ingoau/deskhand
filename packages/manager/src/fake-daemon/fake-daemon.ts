@@ -195,6 +195,8 @@ export class FakeDaemon {
   private vnc = new Set<VncConn>();
   /** Inputs received over control-mode VNC connections (for tests). */
   vncInputs: Buffer[] = [];
+  /** Button mask of the last VNC pointer event that got through. */
+  vncButtons = 0;
 
   constructor(opts: FakeDaemonOptions) {
     this.opts = {
@@ -279,6 +281,11 @@ export class FakeDaemon {
       heldButtons: this.heldButtons,
       cdpAvailable: false,
     };
+  }
+
+  /** Background colour of the fake screen (changes with every action). */
+  background(): [number, number, number] {
+    return this.bg();
   }
 
   private bg(): [number, number, number] {
@@ -532,30 +539,189 @@ export class FakeDaemon {
     );
     const conn: VncConn = { socket, mode: url.searchParams.get("mode") ?? "view", generation: Number(url.searchParams.get("generation") ?? this.generation) };
     this.vnc.add(conn);
-    socket.write(wsFrame(Buffer.from("RFB 003.008\n")));
+    const rfb = new FakeRfb(this, conn, (b) => socket.write(wsFrame(b)));
     let pending = Buffer.alloc(0);
+    const drop = () => {
+      rfb.stop();
+      this.vnc.delete(conn);
+    };
     socket.on("data", (d: Buffer) => {
       const [frames, rest] = wsParse(Buffer.concat([pending, d]));
       pending = Buffer.from(rest);
       for (const f of frames) {
         if (f.opcode === 8) {
           socket.end(wsFrame(Buffer.alloc(0), 8));
-          this.vnc.delete(conn);
+          drop();
           return;
         }
         if (f.opcode === 9) {
           socket.write(wsFrame(f.payload, 10));
           continue;
         }
-        const allowed = conn.mode === "control" && this.lock !== null && conn.generation === this.generation;
-        if (allowed) {
-          this.vncInputs.push(f.payload);
-          socket.write(wsFrame(f.payload));
+        if (!rfb.feed(f.payload)) {
+          socket.end(wsFrame(Buffer.alloc(0), 8));
+          drop();
+          return;
         }
       }
     });
-    socket.on("close", () => this.vnc.delete(conn));
-    socket.on("error", () => this.vnc.delete(conn));
+    socket.on("close", drop);
+    socket.on("error", drop);
+    rfb.start();
+  }
+}
+
+/**
+ * A tiny RFB 3.8 server (security None, raw encoding) so noVNC connects to fake desktops. The frame is
+ * the same picture as the fake screenshots (background colour + cursor mark). Input messages (KeyEvent,
+ * PointerEvent, ClientCutText) are recorded in `vncInputs`, and pointer moves move the fake cursor, only
+ * when the real daemon would let them through: control mode, locked, and the connection's generation
+ * is current. (Erasable TypeScript only: no parameter properties.)
+ */
+class FakeRfb {
+  d: FakeDaemon;
+  conn: VncConn;
+  write: (b: Buffer) => void;
+  buf = Buffer.alloc(0);
+  stage: "version" | "security" | "init" | "normal" = "version";
+  /** Client pixel format (noVNC sends its own with SetPixelFormat). */
+  pf = { be: false, rs: 16, gs: 8, bs: 0 };
+  wantIncremental = false;
+  sentState = "";
+  timer: ReturnType<typeof setInterval> | undefined;
+
+  constructor(d: FakeDaemon, conn: VncConn, write: (b: Buffer) => void) {
+    this.d = d;
+    this.conn = conn;
+    this.write = write;
+  }
+
+  start() {
+    this.write(Buffer.from("RFB 003.008\n"));
+    this.timer = setInterval(() => {
+      if (this.stage === "normal" && this.wantIncremental && this.screenState() !== this.sentState) this.sendFrame();
+    }, 200);
+  }
+
+  stop() {
+    if (this.timer) clearInterval(this.timer);
+  }
+
+  screenState() {
+    return `${this.d.actionCount}:${this.d.cursor[0]},${this.d.cursor[1]}`;
+  }
+
+  /** Returns false on a protocol error (the caller closes the connection). */
+  feed(data: Buffer): boolean {
+    this.buf = Buffer.concat([this.buf, data]);
+    for (;;) {
+      const b = this.buf;
+      if (this.stage === "version") {
+        if (b.length < 12) return true;
+        this.buf = b.subarray(12);
+        this.write(Buffer.from([1, 1])); // one security type: None
+        this.stage = "security";
+      } else if (this.stage === "security") {
+        if (b.length < 1) return true;
+        this.buf = b.subarray(1);
+        this.write(Buffer.from([0, 0, 0, 0])); // SecurityResult OK
+        this.stage = "init";
+      } else if (this.stage === "init") {
+        if (b.length < 1) return true;
+        this.buf = b.subarray(1);
+        const name = Buffer.from("deskhand fake desktop");
+        const init = Buffer.alloc(24);
+        init.writeUInt16BE(this.d.opts.width, 0);
+        init.writeUInt16BE(this.d.opts.height, 2);
+        Buffer.from([32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0]).copy(init, 4);
+        init.writeUInt32BE(name.length, 20);
+        this.write(Buffer.concat([init, name]));
+        this.stage = "normal";
+      } else {
+        if (b.length < 1) return true;
+        const len = this.messageLength(b);
+        if (len === null) return false;
+        if (len < 0 || b.length < len) return true; // need more bytes
+        const msg = b.subarray(0, len);
+        this.buf = b.subarray(len);
+        this.handle(msg);
+      }
+    }
+  }
+
+  /** Length of the client message at the start of b; -1 = need more bytes; null = unknown type. */
+  messageLength(b: Buffer): number | null {
+    switch (b[0]) {
+      case 0:
+        return 20; // SetPixelFormat
+      case 2:
+        return b.length < 4 ? -1 : 4 + 4 * b.readUInt16BE(2); // SetEncodings
+      case 3:
+        return 10; // FramebufferUpdateRequest
+      case 4:
+        return 8; // KeyEvent
+      case 5:
+        return 6; // PointerEvent
+      case 6:
+        return b.length < 8 ? -1 : 8 + Math.abs(b.readInt32BE(4)); // ClientCutText (negative length = extended)
+      default:
+        return null;
+    }
+  }
+
+  handle(msg: Buffer) {
+    switch (msg[0]) {
+      case 0:
+        this.pf = { be: msg[6] !== 0, rs: msg[14]!, gs: msg[15]!, bs: msg[16]! };
+        return;
+      case 3:
+        if (msg[1] === 0 || this.screenState() !== this.sentState) this.sendFrame();
+        else this.wantIncremental = true;
+        return;
+      case 4:
+      case 5:
+      case 6: {
+        const allowed = this.conn.mode === "control" && this.d.lock !== null && this.conn.generation === this.d.generation;
+        if (!allowed) return;
+        this.d.vncInputs.push(Buffer.from(msg));
+        if (msg[0] === 5) {
+          const pressed = (msg[1]! & 1) !== 0;
+          const wasPressed = this.d.vncButtons !== 0;
+          this.d.vncButtons = msg[1]!;
+          this.d.cursor = [msg.readUInt16BE(2), msg.readUInt16BE(4)];
+          if (pressed && !wasPressed) this.d.actionCount++;
+        }
+        return;
+      }
+    }
+  }
+
+  sendFrame() {
+    const { width: w, height: h } = this.d.opts;
+    this.sentState = this.screenState();
+    this.wantIncremental = false;
+    const [r, g, b] = this.d.background();
+    const px = (rr: number, gg: number, bb: number) => {
+      const v = ((rr << this.pf.rs) | (gg << this.pf.gs) | (bb << this.pf.bs)) >>> 0;
+      const out = Buffer.alloc(4);
+      if (this.pf.be) out.writeUInt32BE(v);
+      else out.writeUInt32LE(v);
+      return out;
+    };
+    const bgPx = px(r, g, b);
+    const markPx = px(230, 30, 30);
+    const head = Buffer.alloc(16);
+    head.writeUInt16BE(1, 2); // one rectangle
+    head.writeUInt16BE(w, 8);
+    head.writeUInt16BE(h, 10);
+    head.writeInt32BE(0, 12); // raw encoding
+    const pixels = Buffer.alloc(w * h * 4);
+    for (let i = 0; i < w; i++) bgPx.copy(pixels, i * 4);
+    for (let y = 1; y < h; y++) pixels.copy(pixels, y * w * 4, 0, w * 4);
+    const [cx, cy] = this.d.cursor;
+    for (let y = Math.max(0, cy - 4); y <= Math.min(h - 1, cy + 4); y++)
+      for (let x = Math.max(0, cx - 4); x <= Math.min(w - 1, cx + 4); x++) markPx.copy(pixels, (y * w + x) * 4);
+    this.write(Buffer.concat([head, pixels]));
   }
 }
 

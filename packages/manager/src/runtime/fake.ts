@@ -125,7 +125,7 @@ export class FakeRuntime implements Runtime {
           width: w,
           height: h,
           filesRoot: c.filesRoot,
-          lockWaitMs: this.opts.lockWaitMs,
+          lockWaitMs: this.opts.lockWaitMs ?? (process.env.DESKHAND_FAKE_LOCK_WAIT_MS ? Number(process.env.DESKHAND_FAKE_LOCK_WAIT_MS) : undefined),
           apiVersion: this.opts.apiVersion,
         }),
     );

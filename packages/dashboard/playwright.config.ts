@@ -35,7 +35,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: `pnpm exec vite build --logLevel warn && MOCK=1 MOCK_BASE=${BASE} pnpm exec vite preview --port ${PORT} --strictPort`,
+    command: `node_modules/.bin/vite build --logLevel warn && MOCK=1 MOCK_BASE=${BASE} node_modules/.bin/vite preview --port ${PORT} --strictPort`,
     url: `http://127.0.0.1:${PORT}${BASE}`,
     reuseExistingServer: !!process.env.E2E_REUSE,
     timeout: 120_000,

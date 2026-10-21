@@ -75,6 +75,10 @@ export interface Config {
   /** Trust X-Forwarded-Proto/Host from a reverse proxy. */
   trustProxy: boolean;
   logLevel: string;
+  /** Re-export Playwright MCP's browser_* tools (DESKHAND_BROWSER_TOOLS, default on). */
+  browserTools: boolean;
+  /** How long browser_* calls wait while the user holds the takeover lock (the daemon does this for pixel input and exec). */
+  lockWaitMs: number;
 }
 
 type Env = Record<string, string | undefined>;
@@ -273,6 +277,8 @@ export function parseConfig(env: Env = process.env): Config {
     fileMaxBytes: parseBytes(env.DESKHAND_FILE_MAX_BYTES || "512m"),
     trustProxy: bool(env.DESKHAND_TRUST_PROXY, true, "DESKHAND_TRUST_PROXY"),
     logLevel: env.DESKHAND_LOG_LEVEL || "info",
+    browserTools: bool(env.DESKHAND_BROWSER_TOOLS, true, "DESKHAND_BROWSER_TOOLS"),
+    lockWaitMs: dur(env.DESKHAND_LOCK_WAIT, "30s", "DESKHAND_LOCK_WAIT"),
   };
 }
 

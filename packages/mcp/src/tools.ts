@@ -7,6 +7,7 @@ import { z } from "zod";
 import { DeskhandError, type InputAction, type InputResponse, type TemplateSummary } from "@deskhand/shared";
 import type { DesktopRef } from "./backend.js";
 import { overlaysFor } from "./describe.js";
+import { formatUiTree, type UiTreeRoot } from "./uitree.js";
 import { text, type Content, type JsonSchema, type ToolContext, type ToolDef, type ToolOutput, type ToolRegistry } from "./registry.js";
 
 // ---------------------------------------------------------------- schema pieces
@@ -441,7 +442,7 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
   // ------------------------------------------------ computer use (computer_toolset_20260801)
   reg.register({
     name: "screenshot",
-    description: "Take a screenshot of the whole screen. Coordinates in other tools are pixels of this image.",
+    description: "Take a screenshot of the whole screen. Coordinates in other tools are pixels of this image. To act precisely, prefer browser_snapshot for web pages and ui_tree for native apps; use zoom to read small text.",
     inputSchema: obj({ desktop: desktopProp }),
     parse: z.object({ desktop: zDesktop }).strict(),
     scope: "desktop",
@@ -474,17 +475,19 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
       if (x1 > s.width || y1 > s.height) throw new DeskhandError("invalid_argument", `region [${args.region.join(", ")}] is outside the ${s.width}×${s.height} screen.`);
       const shot = await ctx.desktop!.daemon.screenshot({ format: "png", region: [x0, y0, x1, y1] });
       const raw = Buffer.from(shot.data, "base64");
+      // The action log draws the region in screen coordinates, so it stores the whole screen, not the zoomed crop.
+      const full = await ctx.desktop!.daemon.screenshot({ format: "png" }).catch(() => null);
       return {
         content: [text(`Zoomed region [${x0}, ${y0}, ${x1}, ${y1}] shown at ${shot.width}×${shot.height}.`), await imageContent(ctx, raw)],
-        overlays: overlaysFor("zoom", args),
-        logScreenshot: raw,
+        overlays: full ? overlaysFor("zoom", args) : [],
+        logScreenshot: full ? Buffer.from(full.data, "base64") : raw,
         hasScreenshot: true,
       };
     },
   });
 
   const clickDesc: Record<string, string> = {
-    left_click: "Click the left mouse button at `coordinate`, or at the current cursor position when omitted.",
+    left_click: "Click the left mouse button at `coordinate`, or at the current cursor position when omitted. For web pages browser_click is more reliable; for native apps click the @x,y point from ui_tree; zoom before clicking small targets.",
     right_click: "Click the right mouse button at `coordinate`, or at the current cursor position when omitted.",
     middle_click: "Click the middle mouse button at `coordinate`, or at the current cursor position when omitted.",
     double_click: "Double-click the left mouse button at `coordinate`, or at the current cursor position when omitted.",
@@ -699,10 +702,10 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
   reg.register({
     name: "desktop_exec",
     description:
-      "Run a shell command inside the desktop as the `agent` user (stdin closed) and return its exit code and output: launch apps (`chromium &`, `xdg-open file`), read or set the clipboard, inspect files. timeout in seconds (default 60, max 600) kills the whole process group. Confined to the desktop container and its mounts.",
+      "Run a shell command inside the desktop as the `agent` user (stdin closed) and return its exit code and output: launch apps (`mousepad ~/notes.txt &`, `featherpad &`, `xdg-open file` — end with & so the call returns), read or set the clipboard (`xclip`), inspect files. Returns as soon as the command exits, even if it left background processes. timeout in seconds (default 60, max 600) kills the whole process group. Confined to the desktop container and its mounts.",
     inputSchema: obj(
       {
-        command: { type: "string", description: "Shell command (run with sh -c)." },
+        command: { type: "string", description: "Shell command (run with bash -c in the agent user's home directory)." },
         timeout: { type: "number", minimum: 1, maximum: 600, description: "Seconds before the command is killed (default 60)." },
         desktop: desktopProp,
       },
@@ -727,15 +730,25 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
   reg.register({
     name: "ui_tree",
     description:
-      "Get the accessibility tree of native apps (AT-SPI): elements with role, name, states and box [x, y, width, height] in screenshot pixels. Click an element's centre instead of estimating from pixels. `window` filters by window title substring.",
-    inputSchema: obj({ window: { type: "string", description: "Only windows whose title contains this text." }, desktop: desktopProp }),
+      "Read the accessibility tree of the desktop's windows (AT-SPI) — the precise way to work with native apps (text editors, file managers, dialogs). One line per element: role \"name\" [states] value=… @x,y box=[x,y,w,h]. @x,y is the point to click in screenshot pixels (visible part of the element, not covered by another window); click it with left_click instead of estimating from the screenshot. Windows are listed topmost first; [active] marks the focused one. Only elements currently on screen are listed: scroll to reveal more. `window` keeps only windows whose title or app name contains that text (case-insensitive) — use it for big trees. For web pages prefer browser_snapshot.",
+    inputSchema: obj({ window: { type: "string", description: "Only windows whose title or app name contains this text (case-insensitive)." }, desktop: desktopProp }),
     parse: z.object({ window: z.string().max(200).optional(), desktop: zDesktop }).strict(),
     scope: "desktop",
     async handler(args, ctx) {
-      const tree = await ctx.desktop!.daemon.uiTree(args.window);
-      let s = JSON.stringify(tree);
-      if (s.length > 80_000) s = s.slice(0, 80_000) + "… (truncated; pass `window` to narrow it down)";
-      return { content: [text(s)] };
+      const rd = ctx.desktop!;
+      const tree = (await rd.daemon.uiTree(args.window)) as UiTreeRoot;
+      const out = formatUiTree(tree, { screen: rd.desktop.screen, window: args.window });
+      let body = out.text;
+      if (args.window && out.windows === 0 && !tree.stack) {
+        // Say which windows exist so the agent can pick a better filter.
+        const all = (await rd.daemon.uiTree().catch(() => null)) as UiTreeRoot | null;
+        const names = (all?.children ?? []).map((w) => `${JSON.stringify(w.name || "(untitled)")} (${w.app ?? "?"})`);
+        body += names.length ? ` Open windows: ${names.join(", ")}.` : " No windows with accessible elements are open.";
+      }
+      return {
+        content: [text(body)],
+        summary: `ui_tree${args.window ? ` ${JSON.stringify(args.window)}` : ""} → ${out.windows} window${out.windows === 1 ? "" : "s"}, ${out.elements} elements${out.truncated ? " (truncated)" : ""}`,
+      };
     },
   });
 }

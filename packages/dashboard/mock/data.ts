@@ -221,6 +221,12 @@ function makeTemplates(t0: number): Map<string, TemplateDetail> {
     { currentVersion: 4, lastConfirmedAt: iso(t0 - 9 * D), outdatedBase: true, t0 },
   );
 
+  // Phase 4 fields (optional in the contract), as the manager reports them.
+  const base4 = { currentBaseVersion: "0.1.0" };
+  Object.assign(base, base4, { hasRecipe: false, baseVersion: "0.1.0", extensions: [], staleReason: null, changedByAgentAt: null, rebuild: null });
+  Object.assign(research, base4, { hasRecipe: true, baseVersion: "0.1.0", extensions: research.versions.find((v) => v.version === research.currentVersion)?.extensions ?? [], staleReason: null, rebuild: null });
+  Object.assign(vendor, base4, { hasRecipe: false, baseVersion: "0.1.0", extensions: ["uBlock Origin"], staleReason: "problem reported: Ariba login expired, redirected to SSO", rebuild: null });
+  Object.assign(office, base4, { hasRecipe: false, baseVersion: "0.0.9", extensions: [], staleReason: null, rebuild: null });
   return new Map([base, research, vendor, office].map((t) => [t.name, t]));
 }
 

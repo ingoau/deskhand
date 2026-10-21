@@ -12,6 +12,7 @@ export function Login() {
   const navigate = useNavigate();
   const qc = useQueryClient();
   const next = params.get("next");
+  const reason = params.get("reason");
   const login = useMutation({
     mutationFn: () => api.login(token.trim()),
     onSuccess: () => {
@@ -24,6 +25,13 @@ export function Login() {
       <div className="w-full max-w-[420px]">
         <div className="mb-6 font-bold text-fg">deskhand</div>
         <h1 className="text-lg text-fg">sign in</h1>
+        {reason ? (
+          <p className="mt-3 border-l-2 border-amber pl-3 text-amber" role="alert" data-testid="login-reason">
+            {reason === "expired"
+              ? "That login link has expired or was already used. Links work once, for 5 minutes — get a new one with deskhand login-link."
+              : "That login link is incomplete. Copy the whole link that deskhand login-link printed."}
+          </p>
+        ) : null}
         <p className="mt-2 text-muted">
           On the deskhand host, run <code className="text-fg">deskhand login-link</code> (e.g. <code className="text-dim">docker compose exec deskhand deskhand login-link</code>) and open
           the link it prints. Links work once and expire after 5 minutes.

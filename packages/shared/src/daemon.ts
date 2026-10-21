@@ -199,7 +199,11 @@ export type ExecResponse = z.infer<typeof ExecResponse>;
 
 /** GET /files?path=/abs/path -> raw bytes. PUT /files?path=/abs/path (raw body) -> {bytes}. Owned by `agent`. */
 
-/** GET /ui-tree?window=<title substring> */
+/**
+ * GET /ui-tree?window=<title or app substring> -> {role:"desktop", children: UiNode[] (windows, topmost
+ * first), stack?: [{name, app, box, states, z}] (every window, also those the filter left out, so callers
+ * can tell what covers what), truncated?: true}
+ */
 export const UiNode: z.ZodType<UiNodeT> = z.lazy(() =>
   z.object({
     role: z.string(),
@@ -208,15 +212,28 @@ export const UiNode: z.ZodType<UiNodeT> = z.lazy(() =>
     box: z.tuple([z.number(), z.number(), z.number(), z.number()]).optional(), // x, y, w, h in screen px
     /** On top-level windows: the application's name (e.g. "Chromium", "mousepad"). */
     app: z.string().optional(),
+    /** Accessible description (e.g. a tooltip), only on unnamed elements. */
+    description: z.string().optional(),
+    /** Current text (editable text, entries; capped) or numeric value (sliders, spin buttons). */
+    value: z.string().optional(),
+    /** On top-level windows: stacking position, 0 = topmost. Windows are listed topmost first. */
+    z: z.number().int().optional(),
     children: z.array(UiNode).optional(),
   }),
 );
+/**
+ * Window states beyond AT-SPI's: "active" only on the window that has the X input focus, "minimized",
+ * and "popup" for override-redirect windows (open menus) the window manager does not list.
+ */
 export interface UiNodeT {
   role: string;
   name: string;
   states?: string[];
   box?: [number, number, number, number];
   app?: string;
+  description?: string;
+  value?: string;
+  z?: number;
   children?: UiNodeT[];
 }
 

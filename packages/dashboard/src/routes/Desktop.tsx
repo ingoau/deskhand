@@ -15,7 +15,8 @@ import { displayState, displayTitle, lockIsLong, metaLine } from "../lib/desktop
 import { clock, formatBytes, formatUptime, screenLabel, since, toMs, until } from "../lib/format";
 import { KEYSYM, textToKeysyms } from "../lib/keysym";
 import { useMediaQuery, useNow } from "../lib/now";
-import { useDesktop, useDesktopMutation, useHandBack, useRecentActions, useTakeOver } from "../lib/queries";
+import { keys, useDesktop, useDesktopMutation, useHandBack, useRecentActions, useTakeOver } from "../lib/queries";
+import { useQueryClient } from "@tanstack/react-query";
 
 export function DesktopPage() {
   const { id = "" } = useParams();
@@ -71,6 +72,8 @@ function DesktopDetail({ desktop: d }: { desktop: DesktopSummary }) {
   const persist = useDesktopMutation(d.id, (v: boolean) => api.setPersistent(d.id, v));
   const [note, setNote] = useState("");
   const [rfb, setRfb] = useState<RFB | null>(null);
+  const [actualSize, setActualSize] = useState(false);
+  const qc = useQueryClient();
   const [remoteClip, setRemoteClip] = useState<string | null>(null);
   const [dialog, setDialog] = useState<null | "save" | "download" | "kill">(null);
   const [upload, setUpload] = useState<File | null>(null);
@@ -181,14 +184,37 @@ function DesktopDetail({ desktop: d }: { desktop: DesktopSummary }) {
               {d.status === "starting" ? (
                 <div className="grid h-full w-full place-items-center bg-tile text-muted">starting…</div>
               ) : (
-                <LiveView desktop={d} control={control} generation={d.lock?.generation ?? d.generation} onRfb={setRfb} onClipboard={setRemoteClip} />
+                <LiveView
+                  desktop={d}
+                  control={control}
+                  generation={d.lock?.generation ?? d.generation}
+                  actualSize={actualSize}
+                  onRfb={setRfb}
+                  onClipboard={setRemoteClip}
+                  onDropped={() => void qc.invalidateQueries({ queryKey: keys.desktop(d.id) })}
+                />
               )}
             </div>
             <div className="mt-2 flex items-center text-muted">
               <span data-testid="view-mode" className={cn(control && "text-violet")}>
                 {control ? `you have control · ${formatUptime(now - (lockSince ?? now))}` : d.status === "running" ? "view only" : d.status}
               </span>
-              <span className="ml-auto tabular-nums">{screenLabel(screen)}</span>
+              {control && lockIsLong(d, now) ? (
+                <span className="ml-2 truncate text-amber" data-testid="long-lock">
+                  · agent waiting — hand back when done
+                </span>
+              ) : null}
+              {d.status === "running" ? (
+                <button
+                  className="ml-auto mr-3 text-muted hover:text-fg"
+                  onClick={() => setActualSize((v) => !v)}
+                  data-testid="toggle-size"
+                  title={actualSize ? "scale the desktop to fit" : "show the desktop at its real size; drag to pan"}
+                >
+                  {actualSize ? "fit" : "1:1"}
+                </button>
+              ) : null}
+              <span className={cn("tabular-nums", d.status !== "running" && "ml-auto")}>{screenLabel(screen)}</span>
             </div>
           </div>
         </div>
@@ -297,9 +323,29 @@ function DesktopMenu(p: {
 function NeedsYou({ desktop: d, now }: { desktop: DesktopSummary; now: number }) {
   const a = d.attention!;
   const left = until(a.timeoutAt, now);
+  const toast = useToast();
+  const dismiss = useDesktopMutation(d.id, () => api.dismissAttention(d.id, null));
   return (
     <div className="mb-5 border-l-2 border-amber pl-3" data-testid="needs-you">
-      <div className="text-amber">needs you · {since(a.since, now)}</div>
+      <div className="flex items-baseline text-amber">
+        needs you · {since(a.since, now)}
+        {!d.lock ? (
+          <button
+            className="ml-auto text-2xs text-faint hover:text-fg disabled:opacity-50"
+            disabled={dismiss.isPending}
+            onClick={() =>
+              dismiss.mutate(undefined, {
+                onSuccess: () => toast("dismissed · the agent was told you didn't take over", "info"),
+                onError: (e) => toast(errorMessage(e), "error"),
+              })
+            }
+            data-testid="dismiss-attention"
+            title="Clear the flag without taking over; the agent's request_human returns 'dismissed'."
+          >
+            dismiss
+          </button>
+        ) : null}
+      </div>
       <div className="mt-1 text-fg">“{a.reason}”</div>
       <div className="mt-1 text-muted">{left ? `agent blocked · times out in ${left}` : a.timeoutAt ? "agent stopped waiting" : "agent blocked"}</div>
     </div>
@@ -376,6 +422,7 @@ function ControlTools({ rfb, remoteClip }: { rfb: RFB | null; remoteClip: string
         </Button>
       </form>
       <div className="mt-2 flex flex-wrap gap-1.5">
+        <LiveKeys rfb={rfb} />
         {key("enter", KEYSYM.Return)}
         {key("tab", KEYSYM.Tab)}
         {key("esc", KEYSYM.Escape)}
@@ -430,5 +477,84 @@ function ControlTools({ rfb, remoteClip }: { rfb: RFB | null; remoteClip: string
         ) : null}
       </details>
     </div>
+  );
+}
+
+const SPECIAL_KEYS: Record<string, number> = {
+  Enter: KEYSYM.Return,
+  Tab: KEYSYM.Tab,
+  Escape: KEYSYM.Escape,
+  Backspace: KEYSYM.BackSpace,
+  Delete: KEYSYM.Delete,
+  ArrowLeft: KEYSYM.Left,
+  ArrowRight: KEYSYM.Right,
+  ArrowUp: KEYSYM.Up,
+  ArrowDown: KEYSYM.Down,
+};
+
+/**
+ * "keyboard": focuses an invisible text field so a phone's on-screen keyboard opens, and forwards every key
+ * straight to the desktop (characters, backspace, enter) — typing into the live view without the send box.
+ * The field keeps one sentinel character so a backspace shows up as a shorter value even on Android, where
+ * keydown reports "Unidentified".
+ */
+function LiveKeys({ rfb }: { rfb: RFB | null }) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const [active, setActive] = useState(false);
+  const composing = useRef(false);
+  const reset = (el: HTMLTextAreaElement) => {
+    el.value = " ";
+    el.setSelectionRange(1, 1);
+  };
+  const flush = (el: HTMLTextAreaElement) => {
+    const v = el.value;
+    if (v.length === 0) rfb?.sendKey(KEYSYM.BackSpace, null);
+    else if (v.length > 1) textToKeysyms(v.slice(1)).forEach((k) => rfb?.sendKey(k, null));
+    reset(el);
+  };
+  return (
+    <>
+      <button
+        className={cn("h-8 rounded-sm border px-2 text-xs hover:bg-raised disabled:opacity-40", active ? "border-violet text-violet" : "border-line-strong text-dim")}
+        disabled={!rfb}
+        onClick={() => {
+          const el = ref.current;
+          if (!el) return;
+          reset(el);
+          el.focus({ preventScroll: true });
+        }}
+        data-testid="live-keys"
+        title="open the keyboard and type straight into the desktop"
+      >
+        ⌨ keyboard
+      </button>
+      <textarea
+        ref={ref}
+        aria-label="keyboard input for the desktop"
+        data-testid="live-keys-input"
+        autoCapitalize="off"
+        autoCorrect="off"
+        autoComplete="off"
+        spellCheck={false}
+        className="pointer-events-none fixed bottom-0 left-0 h-px w-px resize-none opacity-0"
+        onFocus={() => setActive(true)}
+        onBlur={() => setActive(false)}
+        onKeyDown={(e) => {
+          const sym = SPECIAL_KEYS[e.key];
+          if (sym != null && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            rfb?.sendKey(sym, null);
+          }
+        }}
+        onCompositionStart={() => (composing.current = true)}
+        onCompositionEnd={(e) => {
+          composing.current = false;
+          flush(e.currentTarget);
+        }}
+        onInput={(e) => {
+          if (!composing.current) flush(e.currentTarget);
+        }}
+      />
+    </>
   );
 }

@@ -101,4 +101,23 @@ describe("template version diff", () => {
     expect(h[0]!.diff.packages.added).toEqual(["x"]);
     expect(h[2]!.diff.initial).toBe(true);
   });
+
+  it("prefers the manager's per-version changes (phase 4), compared with the previous kept version", () => {
+    const changes = {
+      from: 1,
+      description: [{ field: "tags", before: ["a"], after: ["a", "b"] }],
+      loggedInSites: { added: ["linear.app"], removed: [] },
+      extensions: { added: [], removed: ["Old"] },
+      packages: { added: [], removed: [] },
+      recipeChanged: true,
+      baseChanged: true,
+    };
+    const h = versionHistory([v(1, { hasRecipe: true }), v(3, { baseVersion: "0.2.0", hasRecipe: true, changes })]);
+    const d = h[0]!.diff;
+    expect(d.description).toEqual([{ field: "tags", before: "a", after: "a, b" }]);
+    expect(d.loggedInSites.added).toEqual(["linear.app"]);
+    expect(d.extensions.removed).toEqual(["Old"]);
+    expect(d.baseChanged).toEqual({ before: "0.1.0", after: "0.2.0" });
+    expect(d.recipeChanged).toEqual({ before: true, after: true }); // edited, shown as "changed"
+  });
 });
