@@ -155,6 +155,24 @@ export async function createManager(cfg: Config, deps: ManagerDeps = {}): Promis
     { prefix: cfg.basePath },
   );
 
+  /**
+   * First start (and the first start after an upgrade to a new version tag): download the desktop image in the
+   * background, so the first desktop_start does not wait for ~0.7 GB. A concurrent desktop_start joins the same pull.
+   */
+  const prepullDesktopImage = async () => {
+    try {
+      if (await runtime.imageExists(cfg.desktopImage)) return;
+      logger.info({ image: cfg.desktopImage }, "downloading the desktop image in the background (once per version)");
+      const t0 = Date.now();
+      await runtime.ensureImage(cfg.desktopImage);
+      logger.info({ image: cfg.desktopImage, seconds: Math.round((Date.now() - t0) / 1000) }, "desktop image ready");
+      await templates.initBase();
+      void rebuilder.autoRebuild();
+    } catch (e) {
+      logger.warn({ image: cfg.desktopImage, err: (e as Error).message }, "could not download the desktop image yet; the first desktop_start will retry");
+    }
+  };
+
   const manager: Manager = {
     cfg,
     app,
@@ -178,6 +196,7 @@ export async function createManager(cfg: Config, deps: ManagerDeps = {}): Promis
       await templates.initBase();
       void templates.pruneAll();
       void rebuilder.autoRebuild();
+      void prepullDesktopImage();
       const address = await app.listen({ host: cfg.listen.host, port: cfg.listen.port });
       const port = (app.server.address() as { port: number }).port;
       const host = cfg.listen.host === "0.0.0.0" || cfg.listen.host === "::" ? "127.0.0.1" : cfg.listen.host;

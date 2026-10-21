@@ -1,9 +1,11 @@
-# deskhand: isolated Linux desktops for AI agents.
+# deskhand: isolated Linux desktops for AI agents. Quickstart: docs/quickstart.md
 #   docker compose up -d                       start (the log prints a login link and the first API token)
 #   docker compose logs deskhand               see them again
 #   docker compose exec deskhand deskhand ls   the CLI
-#   docker compose pull && docker compose up -d   upgrade (desktops keep running; not managed by compose)
-# Every setting below can be overridden from the shell or a .env file next to this file.
+#   docker compose pull && docker compose up -d   upgrade: desktops are not managed by compose and keep running;
+#                                              each moves to the new desktop image the next time it starts
+# Every setting below can be overridden from the shell or a .env file next to this file; all of them, and the
+# ones not listed here, are described in docs/configuration.md.
 # Local builds: docker compose -f compose.yaml -f compose.dev.yaml --profile build build
 name: ${DESKHAND_PROJECT:-deskhand}
 
@@ -27,12 +29,18 @@ services:
       DESKHAND_MEMORY_BUDGET: ${DESKHAND_MEMORY_BUDGET:-80%}
       DESKHAND_DESKTOP_MEMORY: ${DESKHAND_DESKTOP_MEMORY:-2g}
       DESKHAND_DESKTOP_CPUS: ${DESKHAND_DESKTOP_CPUS:-1.5}
+      # Most a single desktop may ask for (desktop_start memory/cpus, the dashboard's "+ new").
+      DESKHAND_DESKTOP_MAX_MEMORY: ${DESKHAND_DESKTOP_MAX_MEMORY:-8g}
+      DESKHAND_DESKTOP_MAX_CPUS: ${DESKHAND_DESKTOP_MAX_CPUS:-4}
+      # auto: desktops started with kvm: true get /dev/kvm when the host has it (opt-in; widens host exposure). off: never.
+      DESKHAND_KVM: ${DESKHAND_KVM:-auto}
       DESKHAND_IDLE_TIMEOUT: ${DESKHAND_IDLE_TIMEOUT:-30m}
       DESKHAND_STOPPED_RETENTION: ${DESKHAND_STOPPED_RETENTION:-24h}
       DESKHAND_LOG_RETENTION: ${DESKHAND_LOG_RETENTION:-7d}
       DESKHAND_TEMPLATE_VERSIONS: ${DESKHAND_TEMPLATE_VERSIONS:-5}
       # The published address (used for printed links); the process itself listens on 0.0.0.0:7480.
       DESKHAND_BIND: ${DESKHAND_BIND:-127.0.0.1:7480}
+      # Sub-path behind a reverse proxy that keeps the prefix, e.g. /deskhand (docs/remote-access.md).
       DESKHAND_BASE_PATH: ${DESKHAND_BASE_PATH:-}
       DESKHAND_AUTH: ${DESKHAND_AUTH:-on}
       # Public origin when reached through a proxy, e.g. https://desk.example.ts.net (links + origin check).
@@ -40,6 +48,7 @@ services:
       # Desktops: image (empty = ghcr.io/ingoau/deskhand-desktop:<this manager's version>), network, sandbox.
       DESKHAND_DESKTOP_IMAGE: ${DESKHAND_DESKTOP_IMAGE:-}
       DESKHAND_NETWORK: ${DESKHAND_NETWORK:-deskhand-desktops}
+      # Chromium's renderer sandbox in desktops (docs/security.md, "Chromium sandbox").
       DESKHAND_CHROME_SANDBOX: ${DESKHAND_CHROME_SANDBOX:-on}
       DESKHAND_SCREEN: ${DESKHAND_SCREEN:-1280x800}
       # Files the agent writes to mounts are owned by this uid/gid on the host (set them to `id -u`/`id -g`).
