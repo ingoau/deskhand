@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Canvas drawing</title><link rel="stylesheet" href="style.css">
+<style> canvas { background: #fff; border: 1px solid #999; cursor: crosshair; } </style></head>
+<body>
+<h1>Canvas drawing</h1>
+<p class="hint">Hold the mouse button and draw.</p>
+<canvas id="c" width="700" height="360"></canvas>
+<div class="status" id="status"></div>
+<script src="common.js"></script>
+<script>
+  const c = document.getElementById("c"), ctx = c.getContext("2d"), status = document.getElementById("status");
+  ctx.lineWidth = 4; ctx.lineCap = "round"; ctx.strokeStyle = "#c0392b";
+  let drawing = false, strokes = [], cur = null;
+  const pos = (e) => { const r = c.getBoundingClientRect(); return [Math.round(e.clientX - r.left), Math.round(e.clientY - r.top)]; };
+  c.addEventListener("mousedown", (e) => { drawing = true; cur = [pos(e)]; ctx.beginPath(); ctx.moveTo(...cur[0]); });
+  c.addEventListener("mousemove", (e) => {
+    if (!drawing) return; const p = pos(e); cur.push(p); ctx.lineTo(...p); ctx.stroke();
+  });
+  window.addEventListener("mouseup", () => {
+    if (!drawing) return; drawing = false; strokes.push(cur); update();
+  });
+  /** Count of painted pixels: proves something was drawn, not just events fired. */
+  const painted = () => {
+    const d = ctx.getImageData(0, 0, c.width, c.height).data; let n = 0;
+    for (let i = 3; i < d.length; i += 4) if (d[i] > 0) n++;
+    return n;
+  };
+  const update = () => {
+    window.deskhand.result = {
+      strokes: strokes.length,
+      points: strokes.map((s) => s.length),
+      bounds: strokes.map((s) => [Math.min(...s.map((p) => p[0])), Math.min(...s.map((p) => p[1])), Math.max(...s.map((p) => p[0])), Math.max(...s.map((p) => p[1]))]),
+      painted: painted(),
+    };
+    status.textContent = JSON.stringify({ strokes: window.deskhand.result.strokes, points: window.deskhand.result.points, painted: window.deskhand.result.painted });
+  };
+  window.deskhandClear = () => { ctx.clearRect(0, 0, c.width, c.height); strokes = []; update(); };
+  update();
+</script>
+</body>
+</html>

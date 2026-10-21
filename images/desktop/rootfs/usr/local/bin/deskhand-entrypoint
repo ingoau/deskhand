@@ -1,0 +1,108 @@
+#!/bin/bash
+# deskhand desktop entrypoint (runs as root). Applies AGENT_UID/AGENT_GID, screen size, locale and
+# timezone, moves the daemon key out of the environment, then hands over to supervisord.
+set -euo pipefail
+
+log() { printf '{"t":"%s","level":"%s","src":"entrypoint","msg":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" "$1" "$2"; }
+
+# --- agent user ids
+AGENT_UID="${AGENT_UID:-1000}"
+AGENT_GID="${AGENT_GID:-1000}"
+if ! [[ "$AGENT_UID" =~ ^[0-9]+$ && "$AGENT_GID" =~ ^[0-9]+$ ]] || [ "$AGENT_UID" = 0 ]; then
+  log error "AGENT_UID/AGENT_GID must be numeric and non-zero (got $AGENT_UID:$AGENT_GID)"; exit 64
+fi
+if [ "$(id -g agent)" != "$AGENT_GID" ]; then
+  # Free the gid if another group has it, then move agent's group.
+  other="$(getent group "$AGENT_GID" | cut -d: -f1 || true)"
+  [ -n "$other" ] && [ "$other" != agent ] && groupmod -g "$((60000 + RANDOM % 5000))" "$other"
+  groupmod -g "$AGENT_GID" agent
+fi
+if [ "$(id -u agent)" != "$AGENT_UID" ]; then
+  other="$(getent passwd "$AGENT_UID" | cut -d: -f1 || true)"
+  [ -n "$other" ] && [ "$other" != agent ] && usermod -u "$((60000 + RANDOM % 5000))" "$other"
+  usermod -u "$AGENT_UID" -g "$AGENT_GID" agent
+fi
+# Fix ownership of the home directory only when it is wrong (template images can be large).
+if [ "$(stat -c %u:%g /home/agent)" != "$AGENT_UID:$AGENT_GID" ]; then
+  log info "re-owning /home/agent for $AGENT_UID:$AGENT_GID"
+  chown -R -h "$AGENT_UID:$AGENT_GID" /home/agent 2>/dev/null || true
+fi
+
+# --- screen
+SCREEN_SPEC="${DESKHAND_SCREEN:-1280x800x24}"
+if [[ "$SCREEN_SPEC" =~ ^([0-9]+)x([0-9]+)(x([0-9]+))?$ ]]; then
+  W="${BASH_REMATCH[1]}"; H="${BASH_REMATCH[2]}"; D="${BASH_REMATCH[4]:-24}"
+else
+  log warn "invalid DESKHAND_SCREEN '$SCREEN_SPEC', using 1280x800x24"; W=1280; H=800; D=24
+fi
+[ "$W" -gt 1920 ] && W=1920; [ "$H" -gt 1080 ] && H=1080
+[ "$W" -lt 640 ] && W=640;   [ "$H" -lt 480 ] && H=480
+[ "$D" = 24 ] || D=24
+
+# --- locale and timezone (runtime settings, passed by the manager)
+if [ -n "${TZ:-}" ] && [ -e "/usr/share/zoneinfo/$TZ" ]; then
+  ln -sf "/usr/share/zoneinfo/$TZ" /etc/localtime; echo "$TZ" > /etc/timezone
+else
+  TZ=UTC
+fi
+REQ_LANG="${LANG:-C.UTF-8}"
+norm() { echo "$1" | tr '[:upper:]' '[:lower:]' | sed 's/utf-8/utf8/'; }
+if locale -a 2>/dev/null | tr '[:upper:]' '[:lower:]' | grep -qx "$(norm "$REQ_LANG")"; then
+  DESK_LANG="$REQ_LANG"
+else
+  DESK_LANG="C.UTF-8"
+  [ "$REQ_LANG" != "C.UTF-8" ] && log info "locale $REQ_LANG not installed; using C.UTF-8 (LANGUAGE=${REQ_LANG%%.*})"
+fi
+
+# --- runtime dirs
+install -d -m 0755 -o root -g root /run/deskhand
+install -d -m 0700 -o "$AGENT_UID" -g "$AGENT_GID" "/run/user/$AGENT_UID"
+install -d -m 1777 /tmp/.X11-unix /tmp/.ICE-unix
+rm -f /tmp/.X0-lock /tmp/.X11-unix/X0
+for d in Desktop Downloads Documents .config .cache; do
+  install -d -o "$AGENT_UID" -g "$AGENT_GID" "/home/agent/$d"
+done
+
+# --- daemon key: file only, never in the environment of agent processes
+umask 077
+if [ -n "${DESKHAND_DAEMON_KEY:-}" ]; then
+  printf '%s' "$DESKHAND_DAEMON_KEY" > /run/deskhand/key
+else
+  head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > /run/deskhand/key
+  log warn "DESKHAND_DAEMON_KEY not set; generated a random key in /run/deskhand/key (docker exec to read it)"
+fi
+chmod 0600 /run/deskhand/key
+unset DESKHAND_DAEMON_KEY
+umask 022
+
+# --- environment shared by every desktop process (read by supervisord programs and the daemon's exec)
+cat > /run/deskhand/session.env <<EOF
+DISPLAY=:0
+HOME=/home/agent
+USER=agent
+LOGNAME=agent
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+LANG=$DESK_LANG
+LANGUAGE=${REQ_LANG%%.*}
+TZ=$TZ
+XDG_RUNTIME_DIR=/run/user/$AGENT_UID
+XDG_SESSION_TYPE=x11
+XDG_CURRENT_DESKTOP=openbox
+DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$AGENT_UID/bus
+NO_AT_BRIDGE=0
+QT_ACCESSIBILITY=1
+QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1
+ACCESSIBILITY_ENABLED=1
+EOF
+cat > /run/deskhand/screen.env <<EOF
+DESKHAND_SCREEN_W=$W
+DESKHAND_SCREEN_H=$H
+DESKHAND_SCREEN_D=$D
+AGENT_UID=$AGENT_UID
+AGENT_GID=$AGENT_GID
+EOF
+chmod 0644 /run/deskhand/session.env /run/deskhand/screen.env
+
+log info "starting desktop ${W}x${H}x${D} for agent ${AGENT_UID}:${AGENT_GID}, TZ=$TZ, LANG=$DESK_LANG"
+exec /usr/bin/supervisord -n -c /etc/deskhand/supervisord.conf

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Text selection</title><link rel="stylesheet" href="style.css">
+<style> #text { font-size: 28px; line-height: 1.6; max-width: 900px; background: #fff; padding: 16px; } </style></head>
+<body>
+<h1>Text selection by dragging</h1>
+<p class="hint">Drag across the text to select part of it.</p>
+<p id="text"><span id="w-the">The</span> <span id="w-quick">quick</span> <span id="w-brown">brown</span> <span id="w-fox">fox</span> <span id="w-jumps">jumps</span> <span id="w-over">over</span> <span id="w-lazy">the lazy dog.</span></p>
+<div class="status" id="status"></div>
+<script src="common.js"></script>
+<script>
+  const status = document.getElementById("status");
+  document.addEventListener("selectionchange", () => {
+    const sel = window.getSelection().toString();
+    window.deskhand.result = { selection: sel };
+    status.textContent = JSON.stringify(sel);
+  });
+  /** Screen point at the left or right edge of a word (vertically centred). */
+  window.deskhandWordEdge = (id, edge) => {
+    const r = document.getElementById(id).getBoundingClientRect(); const o = window.deskhand.offset;
+    return [Math.round(o[0] + (edge === "left" ? r.left + 1 : r.right - 1)), Math.round(o[1] + r.top + r.height / 2)];
+  };
+  window.deskhand.result = { selection: "" };
+</script>
+</body>
+</html>

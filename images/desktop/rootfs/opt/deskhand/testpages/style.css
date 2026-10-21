@@ -1,0 +1,5 @@
+body { font: 16px "Noto Sans", sans-serif; margin: 24px; background: #f6f6f4; color: #222; }
+h1 { font-size: 22px; margin: 0 0 8px; }
+p.hint { color: #666; margin: 0 0 20px; }
+a { color: #2457c5; }
+.status { font: 14px "Noto Sans Mono", monospace; margin-top: 16px; padding: 8px; background: #fff; border: 1px solid #ccc; min-height: 20px; }

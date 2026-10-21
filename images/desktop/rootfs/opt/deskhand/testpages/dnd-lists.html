@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Drag between lists</title><link rel="stylesheet" href="style.css">
+<style>
+  .lists { display: flex; gap: 60px; }
+  ul.list { list-style: none; margin: 0; padding: 10px; width: 260px; min-height: 320px; background: #fff; border: 2px dashed #aaa; }
+  ul.list.over { border-color: #2457c5; background: #eef3ff; }
+  ul.list li { padding: 14px 12px; margin: 6px 0; background: #dfe6f0; border-radius: 4px; cursor: grab; user-select: none; }
+  ul.list li.dragging { opacity: 0.4; }
+  h2 { font-size: 16px; margin: 0 0 6px; }
+</style></head>
+<body>
+<h1>HTML5 drag-and-drop between two lists</h1>
+<p class="hint">Drag an item from the left list to the right list.</p>
+<div class="lists">
+  <div><h2>Left</h2><ul class="list" id="left">
+    <li draggable="true" id="item-1">Item 1</li>
+    <li draggable="true" id="item-2">Item 2</li>
+    <li draggable="true" id="item-3">Item 3</li>
+  </ul></div>
+  <div><h2>Right</h2><ul class="list" id="right"></ul></div>
+</div>
+<div class="status" id="status"></div>
+<script src="common.js"></script>
+<script>
+  const status = document.getElementById("status");
+  const state = () => ({
+    left: [...document.querySelectorAll("#left li")].map((li) => li.id),
+    right: [...document.querySelectorAll("#right li")].map((li) => li.id),
+  });
+  const update = () => { window.deskhand.result = state(); status.textContent = JSON.stringify(window.deskhand.result); };
+  document.querySelectorAll("li[draggable]").forEach((li) => {
+    li.addEventListener("dragstart", (e) => {
+      e.dataTransfer.setData("text/plain", li.id); e.dataTransfer.effectAllowed = "move";
+      li.classList.add("dragging"); deskhandLog("dragstart", li.id);
+    });
+    li.addEventListener("dragend", () => { li.classList.remove("dragging"); deskhandLog("dragend", li.id); });
+  });
+  document.querySelectorAll("ul.list").forEach((ul) => {
+    ul.addEventListener("dragenter", (e) => { e.preventDefault(); ul.classList.add("over"); deskhandLog("dragenter", ul.id); });
+    ul.addEventListener("dragover", (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; });
+    ul.addEventListener("dragleave", (e) => { if (!ul.contains(e.relatedTarget)) ul.classList.remove("over"); });
+    ul.addEventListener("drop", (e) => {
+      e.preventDefault(); ul.classList.remove("over");
+      const id = e.dataTransfer.getData("text/plain");
+      const el = document.getElementById(id);
+      if (el) ul.appendChild(el);
+      deskhandLog("drop", { id, into: ul.id }); update();
+    });
+  });
+  update();
+</script>
+</body>
+</html>

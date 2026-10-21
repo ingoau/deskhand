@@ -1,0 +1,19 @@
+#!/bin/bash
+# Prints /etc/deskhand-versions.json: deskhand version, base OS, and the versions of the apps and
+# packages that matter for templates.
+set -euo pipefail
+deskhand_version="${1:-dev}"
+pkgs=(chromium firefox-esr pcmanfm mousepad ristretto featherpad openbox tint2 xvfb x11vnc xdotool xclip
+      supervisor python3 python3-pyatspi at-spi2-core fonts-noto-core fonts-noto-cjk fonts-noto-color-emoji)
+. /etc/os-release
+{
+  printf '{\n  "deskhand": "%s",\n  "built": "%s",\n  "arch": "%s",\n  "os": "%s",\n  "node": "%s",\n  "packages": {\n' \
+    "$deskhand_version" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(dpkg --print-architecture)" "$PRETTY_NAME" "$(node --version)"
+  first=1
+  for p in "${pkgs[@]}"; do
+    v="$(dpkg-query -W -f='${Version}' "$p" 2>/dev/null || echo missing)"
+    [ $first = 1 ] || printf ',\n'
+    printf '    "%s": "%s"' "$p" "$v"; first=0
+  done
+  printf '\n  },\n  "sharp": "%s"\n}\n' "$(node -p "require('/opt/deskhand/daemon/node_modules/sharp/package.json').version")"
+}
