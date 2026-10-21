@@ -3,7 +3,6 @@
  * All paths are under DESKHAND_BASE_PATH.
  */
 import { z } from "zod";
-import { Coordinate } from "./daemon.js";
 import { ApiToken, DesktopSummary, LogEntry, TemplateDescription, TemplateDetail, TemplateSummary } from "./manager.js";
 
 /** GET /api/me */
@@ -56,5 +55,3 @@ export const LoginRequest = z.object({ token: z.string().optional(), code: z.str
 export const LoginLinkResponse = z.object({ url: z.string(), expiresAt: z.string() });
 
 /** Daemon GET /cursor (not in daemon.ts originally). */
-export const CursorResponse = z.object({ cursor: Coordinate });
-export type CursorResponse = z.infer<typeof CursorResponse>;
