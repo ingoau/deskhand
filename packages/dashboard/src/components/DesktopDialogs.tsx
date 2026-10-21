@@ -4,7 +4,7 @@ import type { DesktopSummary } from "@deskhand/shared";
 import { api, errorMessage } from "../lib/api";
 import { displayTitle } from "../lib/desktop";
 import { formatBytes } from "../lib/format";
-import { keys } from "../lib/queries";
+import { keys, useTemplates } from "../lib/queries";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent, Field, inputClass } from "./ui/dialog";
 import { useToast } from "./ui/toast";
@@ -20,6 +20,11 @@ export function SaveTemplateDialog({ desktop, open, onOpenChange }: { desktop: D
   const toast = useToast();
   const qc = useQueryClient();
   const [form, setForm] = useState({ name: "", summary: "", use_when: "", not_for: "", setup_notes: "", tags: "" });
+  const { data: templates } = useTemplates();
+  const existing = templates?.find((t) => t.name === form.name.trim()) ?? null;
+  // A new version of an existing template must restate its description or explicitly keep it (phase 4).
+  const [keep, setKeep] = useState(true);
+  const keeping = !!existing && keep;
   useEffect(() => {
     if (open) setForm((f) => ({ ...f, name: f.name || (desktop.template !== "base" ? desktop.template : slug(displayTitle(desktop))) }));
   }, [open, desktop]);
@@ -27,7 +32,8 @@ export function SaveTemplateDialog({ desktop, open, onOpenChange }: { desktop: D
     mutationFn: () =>
       api.saveAsTemplate(desktop.id, {
         name: form.name.trim(),
-        description: {
+        ...(keeping ? { confirm_description: true } : {}),
+        description: keeping ? undefined : {
           summary: form.summary.trim(),
           use_when: form.use_when.trim(),
           ...(form.not_for.trim() ? { not_for: form.not_for.trim() } : {}),
@@ -43,7 +49,7 @@ export function SaveTemplateDialog({ desktop, open, onOpenChange }: { desktop: D
         },
       }),
     onSuccess: (r) => {
-      toast(`saved ${r.template.name} v${r.version}`, "ok");
+      toast(`saved ${r.template.name} v${r.version}${r.notes?.length ? ` · ${r.notes.join(" · ")}` : ""}`, "ok");
       void qc.invalidateQueries({ queryKey: keys.templates });
       onOpenChange(false);
     },
@@ -64,21 +70,34 @@ export function SaveTemplateDialog({ desktop, open, onOpenChange }: { desktop: D
           <Field label="name" hint="an existing name adds a new version; nothing is overwritten">
             <input className={inputClass} value={form.name} onChange={set("name")} required pattern="[a-z0-9][a-z0-9-]*" autoComplete="off" />
           </Field>
-          <Field label="summary *">
-            <input className={inputClass} value={form.summary} onChange={set("summary")} required placeholder="Chromium logged into GitHub and Linear as the bot account" />
-          </Field>
-          <Field label="use when *">
-            <input className={inputClass} value={form.use_when} onChange={set("use_when")} required placeholder="Triaging issues or reviewing PRs in the web UI" />
-          </Field>
-          <Field label="not for">
-            <input className={inputClass} value={form.not_for} onChange={set("not_for")} placeholder="Anything needing the personal Google account" />
-          </Field>
-          <Field label="setup notes">
-            <textarea className={inputClass} rows={2} value={form.setup_notes} onChange={set("setup_notes")} placeholder="Linear opens to the Triage view" />
-          </Field>
-          <Field label="tags" hint="comma separated">
-            <input className={inputClass} value={form.tags} onChange={set("tags")} placeholder="github, linear, web" />
-          </Field>
+          {existing ? (
+            <label className="mb-3 flex items-start gap-2 text-xs" data-testid="keep-description">
+              <input type="checkbox" className="mt-0.5 accent-amber" checked={keep} onChange={(e) => setKeep(e.target.checked)} />
+              <span>
+                <span className="text-fg">keep the current description</span> <span className="text-muted">(v{existing.currentVersion})</span>
+                <span className="mt-0.5 block text-muted">“{existing.description.summary}” · use when {existing.description.use_when}</span>
+              </span>
+            </label>
+          ) : null}
+          {!keeping ? (
+            <>
+              <Field label="summary *">
+                <input className={inputClass} value={form.summary} onChange={set("summary")} required placeholder="Chromium logged into GitHub and Linear as the bot account" />
+              </Field>
+              <Field label="use when *">
+                <input className={inputClass} value={form.use_when} onChange={set("use_when")} required placeholder="Triaging issues or reviewing PRs in the web UI" />
+              </Field>
+              <Field label="not for">
+                <input className={inputClass} value={form.not_for} onChange={set("not_for")} placeholder="Anything needing the personal Google account" />
+              </Field>
+              <Field label="setup notes">
+                <textarea className={inputClass} rows={2} value={form.setup_notes} onChange={set("setup_notes")} placeholder="Linear opens to the Triage view" />
+              </Field>
+              <Field label="tags" hint="comma separated">
+                <input className={inputClass} value={form.tags} onChange={set("tags")} placeholder="github, linear, web" />
+              </Field>
+            </>
+          ) : null}
           {save.error ? <p className="mb-3 text-xs text-red">{errorMessage(save.error)}</p> : null}
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => onOpenChange(false)}>

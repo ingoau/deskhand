@@ -313,10 +313,14 @@ route("DELETE", "api/desktops/:id/attention", async ({ state, params, json }) =>
 
 route("POST", "api/desktops/:id/save-as-template", async ({ state, params, json }) => {
   const d = getDesktop(state, params[0]!);
-  const body = await json<{ name?: string; description?: Partial<TemplateDescription> }>();
+  const body = await json<{ name?: string; description?: Partial<TemplateDescription>; confirm_description?: boolean }>();
   const name = (body.name ?? "").trim();
   if (!/^[a-z0-9][a-z0-9-]{0,40}$/.test(name)) throw new HttpError("invalid_argument", "Template names use lowercase letters, digits and dashes.");
-  const desc = body.description ?? {};
+  // Like the manager (phase 4): a new version restates the description or confirms the current one.
+  const prior = state.templates.get(name);
+  if (prior && !body.description && !body.confirm_description)
+    throw new HttpError("invalid_argument", `"${name}" exists: restate its description or pass confirm_description to keep "${prior.description.summary}".`);
+  const desc: Partial<TemplateDescription> = body.description ?? (prior && body.confirm_description ? prior.description : {});
   if (!desc.summary?.trim() || !desc.use_when?.trim()) throw new HttpError("invalid_argument", "summary and use_when are required.");
   await new Promise((r) => setTimeout(r, 1200)); // quiesce + docker commit
   const src = state.templates.get(d.template);
@@ -343,6 +347,7 @@ route("POST", "api/desktops/:id/save-as-template", async ({ state, params, json 
     packages: srcVersion?.packages ?? [],
     sizeBytes: 1.5 * 1024 ** 3,
     inUse: 0,
+    savedFrom: { desktop: d.id, title: d.title, session: "dashboard" },
   };
   const now = Date.now();
   const t = existing
@@ -369,7 +374,7 @@ route("POST", "api/desktops/:id/save-as-template", async ({ state, params, json 
       );
   state.templates.set(name, t);
   dashboardLog(state, d, "template_save", `template_save("${name}") → v${v}`);
-  return { template: templateSummary(t), version: v };
+  return { template: templateSummary(t), version: v, notes: [] };
 });
 
 route("POST", "api/desktops/:id/files", async ({ state, params, req, body }) => {
@@ -463,6 +468,35 @@ route("POST", "api/templates/:name/rollback", async ({ state, params, json }) =>
   const next = refreshTemplate({ ...t, currentVersion: version }, Date.now());
   state.templates.set(name, next);
   return next;
+});
+
+route("PUT", "api/templates/:name/recipe", async ({ state, params, json }) => {
+  const name = decodeURIComponent(params[0]!);
+  const t = state.templates.get(name);
+  if (!t) throw new HttpError("template_not_found");
+  const { recipe } = await json<{ recipe?: string | null }>();
+  const r = recipe && recipe.trim() ? recipe : null;
+  const versions = t.versions.map((v) => (v.version === t.currentVersion ? { ...v, hasRecipe: !!r, recipe: r } : v));
+  const next = refreshTemplate({ ...t, versions, recipe: r, hasRecipe: !!r }, Date.now());
+  state.templates.set(name, next);
+  return next;
+});
+
+route("POST", "api/templates/:name/rebuild", async ({ state, params }) => {
+  const name = decodeURIComponent(params[0]!);
+  const t = state.templates.get(name);
+  if (!t) throw new HttpError("template_not_found");
+  if (!t.recipe) throw new HttpError("invalid_argument", `"${name}" has no recipe, so it can't be rebuilt; save it again on the new base instead.`);
+  await new Promise((r) => setTimeout(r, 800));
+  const cur = t.versions.find((v) => v.version === t.currentVersion)!;
+  const v = Math.max(...t.versions.map((x) => x.version)) + 1;
+  const tv: TemplateVersion = { ...cur, version: v, image: `deskhand-template:${name}-v${v}`, createdAt: iso(), savedBy: "deskhand (base update)", byAgent: false, baseVersion: "0.2.0", rebuiltFrom: cur.version, savedFrom: null, inUse: 0 };
+  const next = refreshTemplate(
+    { ...t, versions: [tv, ...t.versions], currentVersion: v, outdatedBase: false, baseVersion: "0.2.0", rebuild: { status: "ok", at: iso(), baseVersion: "0.2.0", error: null, version: v } },
+    Date.now(),
+  );
+  state.templates.set(name, next);
+  return { template: templateSummary(next), version: v };
 });
 
 route("POST", "api/templates/:name/default", ({ state, params }) => {

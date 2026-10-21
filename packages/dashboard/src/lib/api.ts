@@ -99,11 +99,15 @@ export interface CreatedToken {
 /** POST /api/desktops/:id/save-as-template */
 export interface SaveTemplateRequest {
   name: string;
-  description: TemplateDescription;
+  /** Required for a new template; for a new version restate it, or send confirm_description to keep the current one. */
+  description?: TemplateDescription;
+  confirm_description?: boolean;
 }
 export interface SaveTemplateResult {
   template: TemplateSummary;
   version: number;
+  /** Notes from the save (quiesce, manifest), phase 4. */
+  notes?: string[];
 }
 
 export interface UploadResult {
@@ -155,6 +159,12 @@ export const api = {
   rollbackTemplate: (name: string, version: number) =>
     request<TemplateDetail>(`api/templates/${enc(name)}/rollback`, { method: "POST", body: { version } }),
   deleteTemplate: (name: string) => request<void>(`api/templates/${enc(name)}`, { method: "DELETE" }),
+  /** Edit the current version's recipe in place (null removes it). */
+  setTemplateRecipe: (name: string, recipe: string | null) =>
+    request<TemplateDetail>(`api/templates/${enc(name)}/recipe`, { method: "PUT", body: { recipe } }),
+  /** Replay the recipe on the current base image; waits for the new version. */
+  rebuildTemplate: (name: string) =>
+    request<{ template: TemplateSummary; version: number }>(`api/templates/${enc(name)}/rebuild`, { method: "POST", body: {} }),
   setDefaultTemplate: (name: string) => request<TemplateDetail>(`api/templates/${enc(name)}/default`, { method: "POST" }),
 
   tokens: () => request<{ tokens: ApiToken[] }>("api/tokens").then((r) => r.tokens),

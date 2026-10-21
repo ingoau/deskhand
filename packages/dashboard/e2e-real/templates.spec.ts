@@ -44,6 +44,46 @@ test("templates saved by an agent are marked, and roll back in one click", async
   await expect(page.getByTestId("current-version")).toHaveText("v2");
 });
 
+test("new version keeping the description, recipe edit and rebuild from the dashboard", async ({ page, agent }) => {
+  test.setTimeout(DOCKER ? 420_000 : 60_000);
+  const a = await agent("recipe-agent");
+  const id = await a.start("recipe-source");
+  const name = `e2e-rcp-${Math.random().toString(36).slice(2, 7)}`;
+  const v1 = await a.call("template_save", { name, description: { summary: "recipe e2e", use_when: "testing rebuilds" }, desktop: id }, 240_000);
+  expect(v1.isError, v1.text).toBe(false);
+
+  // v2 from the dashboard, keeping v1's description.
+  await login(page, `desktops/${id}`);
+  await page.getByTestId("desktop-menu").click();
+  await page.getByRole("menuitem", { name: "save as template…" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel(/^name/).fill(name);
+  await expect(dialog.getByTestId("keep-description")).toContainText("recipe e2e");
+  await dialog.getByRole("button", { name: "save template" }).click();
+  await expect(page.getByText(new RegExp(`saved ${name} v2`))).toBeVisible({ timeout: DOCKER ? 120_000 : 10_000 });
+
+  await page.goto(`templates/${name}`);
+  await expect(page.getByTestId("current-version")).toHaveText("v2");
+  await expect(page.locator('[data-testid="version-row"][data-version="2"]').getByTestId("version-provenance")).toContainText("saved from “recipe-source”");
+  await page.getByTestId("edit-recipe").click();
+  await page.getByLabel("recipe").fill("echo rebuilt-by-recipe > ~/rebuilt.txt");
+  await page.getByRole("button", { name: "save recipe" }).click();
+  await expect(page.getByTestId("recipe")).toContainText("rebuilt-by-recipe");
+  expect((await api("GET", `/api/templates/${name}`)).data.hasRecipe).toBe(true);
+
+  await page.getByTestId("rebuild").click();
+  await expect(page.getByText(new RegExp(`rebuilt ${name} as v3`))).toBeVisible({ timeout: DOCKER ? 300_000 : 20_000 });
+  await expect(page.getByTestId("current-version")).toHaveText("v3");
+  await expect(page.locator('[data-testid="version-row"][data-version="3"]').getByTestId("version-provenance")).toContainText("rebuilt from v2");
+  if (DOCKER) {
+    // A desktop from the rebuilt template has what the recipe made.
+    const b = await agent("recipe-agent-2");
+    const started = await b.call("desktop_start", { template: name });
+    expect(started.text).toContain(`${name} v3`);
+    expect(await b.exec("cat ~/rebuilt.txt")).toContain("rebuilt-by-recipe");
+  }
+});
+
 test("a template saved from the dashboard is not marked as an agent change", async ({ page, agent }) => {
   test.setTimeout(DOCKER ? 240_000 : 60_000);
   const a = await agent("save-agent");
