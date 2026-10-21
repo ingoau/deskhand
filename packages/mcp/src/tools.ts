@@ -107,10 +107,25 @@ function describeDesktop(d: DesktopRef): Record<string, unknown> {
   };
 }
 
-function templateLines(templates: TemplateSummary[]): string {
+function clip(s: string, n: number): string {
+  const one = s.replace(/\s+/g, " ").trim();
+  return one.length > n ? `${one.slice(0, n - 1)}…` : one;
+}
+
+/** One line per template for desktop_start's description (refreshed via tools/list_changed). */
+export function templateLines(templates: TemplateSummary[]): string {
   if (!templates.length) return "";
   return templates
-    .map((t) => `- ${t.name}${t.isDefault ? " (default)" : ""}: ${t.description.summary}. Use when: ${t.description.use_when}${t.stale ? " [stale: not confirmed recently]" : ""}`)
+    .map((t) => {
+      const flags = [
+        t.loggedInSites.length ? `logged in: ${t.loggedInSites.slice(0, 6).join(", ")}${t.loggedInSites.length > 6 ? ", …" : ""}` : "",
+        t.description.not_for ? `not for: ${clip(t.description.not_for, 100)}` : "",
+        t.stale ? `stale: ${t.staleReason ?? "not confirmed recently"}` : "",
+        t.outdatedBase ? "outdated base image" : "",
+      ].filter(Boolean);
+      const sum = clip(t.description.summary, 200).replace(/\.$/, "");
+      return `- ${t.name}${t.isDefault ? " (default)" : ""}: ${sum}. Use when: ${clip(t.description.use_when, 200)}${flags.length ? ` [${flags.join("; ")}]` : ""}`;
+    })
     .join("\n");
 }
 
@@ -132,8 +147,9 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
         "Other desktop tools use this session's first desktop unless you pass `desktop`, and start one with defaults if none exists — call desktop_start first when you need mounts, a template or more than one desktop.",
         "Give each subagent its own desktop: start one per subagent and pass its id in the subagent's prompt so it passes `desktop` on every call.",
         "mounts: host directories (paths on the deskhand host) mounted at the same path, read-only unless write is true. persistent: keep the desktop when the session ends (only the user removes it).",
-        "Templates — reuse one that fits, update one that is close (template_save), create a new one only when nothing fits:",
+        "Templates (pass `template`): reuse a template that fits, update one that is close (start from it, adjust, template_save under the same name), and create a new one only when nothing fits. A template's logins are already active in a desktop started from it. Available now:",
         tpl || "- base: plain desktop",
+        "template_info(name) shows a template's full description, manifest and history; after using one, report with template_feedback.",
       ].join("\n");
     },
     inputSchema: obj({
@@ -234,10 +250,15 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
         summary: t.description.summary,
         use_when: t.description.use_when,
         not_for: t.description.not_for,
-        logged_in_sites: t.loggedInSites.length ? t.loggedInSites : undefined,
-        latest_feedback: t.lastFeedback ? `${t.lastFeedback.kind}: ${t.lastFeedback.note} (${t.lastFeedback.at})` : undefined,
-        stale: t.stale || undefined,
+        tags: t.description.tags?.length ? t.description.tags : undefined,
+        logged_in_sites: t.loggedInSites,
+        extensions: t.extensions?.length ? t.extensions : undefined,
+        latest_feedback: t.lastFeedback ? `${t.lastFeedback.kind} on v${t.lastFeedback.version}: ${t.lastFeedback.note} (${t.lastFeedback.at})` : null,
+        last_confirmed_working: t.lastConfirmedAt,
+        stale: t.stale ? (t.staleReason ?? true) : false,
+        changed_by_agent_recently: t.recentlyChangedByAgent || undefined,
         outdated_base: t.outdatedBase || undefined,
+        recipe: t.hasRecipe || undefined,
       }));
       return { content: [text(JSON.stringify(list, null, 1))] };
     },
@@ -250,31 +271,44 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
     parse: z.object({ name: z.string().min(1).max(64) }).strict(),
     scope: "session",
     async handler(args, ctx) {
-      return { content: [text(JSON.stringify(ctx.backend.templateInfo(args.name), null, 1))] };
+      const t = ctx.backend.templateInfo(args.name);
+      // Per-version recipes repeat the current one; keep the output compact.
+      const versions = t.versions.map(({ recipe: _r, image: _i, ...v }) => v);
+      return { content: [text(JSON.stringify({ ...t, versions }, null, 1))] };
     },
   });
 
   reg.register({
     name: "template_save",
-    description:
-      "Save this desktop as a new version of a template (never overwrites; each save is a new version). Restate or confirm the description on every save. Apps are closed and caches cleared before the snapshot; mounted directories are never included.",
+    description: [
+      "Save this desktop as a new version of a template so other agents can start from it (never overwrites: each save is a new version, and the user can roll back).",
+      "Reuse rule: if a template already fits, use it instead of saving a new one; if one is close, start from it, adjust, and save under the same name; create a new name only when nothing fits.",
+      "Before the snapshot deskhand closes the browser (cookies are flushed, so logins persist) and other apps, and clears caches, Downloads and /tmp; mounted host directories are never included. Every login in a template is usable by every agent that starts from it.",
+      "A new template needs `description` (summary + use_when at least). Each new version must restate the description, or pass confirm_description: true to keep the previous one unchanged.",
+      "deskhand records the logged-in sites, browser extensions and added packages automatically.",
+    ].join("\n"),
     inputSchema: obj(
       {
-        name: { type: "string", description: "Template name: lowercase letters, digits and dashes." },
+        name: { type: "string", description: "Template name: lowercase letters, digits and dashes, e.g. github-bot." },
         description: obj(
           {
             summary: { type: "string", description: "What the template is, e.g. 'Chromium logged into GitHub as the bot account'." },
-            use_when: { type: "string", description: "When an agent should pick it." },
-            not_for: { type: "string" },
-            setup_notes: { type: "string" },
+            use_when: { type: "string", description: "When an agent should pick it, e.g. 'Triaging issues or reviewing PRs in the GitHub web UI'." },
+            not_for: { type: "string", description: "What it must not be used for." },
+            setup_notes: { type: "string", description: "Anything the next agent should know (start pages, extensions, quirks)." },
             tags: { type: "array", items: { type: "string" } },
           },
           ["summary", "use_when"],
         ),
-        recipe: { type: "string", description: "Optional setup script for everything scriptable, replayed when the base image updates." },
+        confirm_description: { type: "boolean", description: "Keep the previous version's description unchanged (instead of passing description)." },
+        recipe: {
+          type: "string",
+          description:
+            "Optional bash setup script for everything scriptable (config files, extensions, packages), replayed on a fresh desktop when the base image updates; logins are carried over from the snapshot. Runs as the agent user like desktop_exec; start it with the line `# deskhand: run-as=root` to run as root (e.g. apt-get install). Omit to keep the previous version's recipe; pass an empty string to remove it.",
+        },
         desktop: desktopProp,
       },
-      ["name", "description"],
+      ["name"],
     ),
     parse: z
       .object({
@@ -287,7 +321,9 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
             setup_notes: z.string().max(2000).optional(),
             tags: z.array(z.string().max(40)).max(20).optional(),
           })
-          .strict(),
+          .strict()
+          .optional(),
+        confirm_description: z.boolean().optional(),
         recipe: z.string().max(100_000).optional(),
         desktop: zDesktop,
       })
@@ -295,7 +331,12 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
     scope: "desktop",
     async handler(args, ctx) {
       const t = await ctx.backend.saveTemplate(ctx.session, ctx.desktop!.desktop.id, args);
-      return { content: [text(`Saved template ${t.name} v${t.currentVersion}. Other agents can now start from it with desktop_start(template="${t.name}").`)] };
+      const lines = [
+        `Saved template ${t.name} v${t.currentVersion}. Other agents can now start from it with desktop_start(template="${t.name}").`,
+        `Logged-in sites recorded: ${t.loggedInSites.length ? t.loggedInSites.join(", ") : "none"}.${t.extensions?.length ? ` Extensions: ${t.extensions.join(", ")}.` : ""}`,
+        ...(t.notes ?? []),
+      ];
+      return { content: [text(lines.join("\n"))] };
     },
   });
 

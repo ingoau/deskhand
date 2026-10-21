@@ -134,6 +134,15 @@ const MIGRATIONS: string[] = [
   );
   CREATE INDEX template_feedback_name ON template_feedback(name, id);
   `,
+  // Phase 4 (templates): manifests, base tracking, rebuilds, feedback sessions.
+  `
+  ALTER TABLE template_versions ADD COLUMN base_image_id TEXT;
+  ALTER TABLE template_versions ADD COLUMN saved_from TEXT;
+  ALTER TABLE template_versions ADD COLUMN rebuilt_from INTEGER;
+  ALTER TABLE template_versions ADD COLUMN manifest_notes TEXT NOT NULL DEFAULT '[]';
+  ALTER TABLE template_feedback ADD COLUMN session TEXT;
+  ALTER TABLE templates ADD COLUMN rebuild TEXT;
+  `,
 ];
 
 export function openDb(file: string): DB {

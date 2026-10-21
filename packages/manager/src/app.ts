@@ -15,6 +15,7 @@ import { ActionLog } from "./actionlog.js";
 import { MountPolicy } from "./mounts.js";
 import { DesktopService } from "./desktops.js";
 import { TemplateService } from "./templates.js";
+import { TemplateRebuilder } from "./template-ops.js";
 import { FileService, ManagerMcpBackend } from "./mcp-backend.js";
 import type { Runtime } from "./runtime/types.js";
 import { DockerRuntime } from "./runtime/docker.js";
@@ -42,6 +43,7 @@ export interface Manager {
   auth: AuthService;
   desktops: DesktopService;
   templates: TemplateService;
+  rebuilder: TemplateRebuilder;
   actionLog: ActionLog;
   mcp: McpService;
   backend: ManagerMcpBackend;
@@ -64,7 +66,13 @@ export async function createManager(cfg: Config, deps: ManagerDeps = {}): Promis
   const desktops = new DesktopService(cfg, db, runtime, policy, templates, actionLog, logger);
   templates.inUse = (name, version) => desktops.list().filter((d) => d.template === name && d.templateVersion === version).length;
   const files = new FileService(cfg, runtime, policy, desktops);
-  const backend = new ManagerMcpBackend(cfg, db, auth, desktops, templates, actionLog, files, logger);
+  const backend = new ManagerMcpBackend(cfg, db, auth, desktops, templates, actionLog, files, logger, runtime);
+  const rebuilder = new TemplateRebuilder({ cfg, desktops, templates, runtime, log: logger });
+  desktops.on("removed", (id: string) => {
+    // A version kept only because a desktop used it can go now.
+    const d = desktops.getAny(id);
+    if (d) void templates.prune(d.template).catch(() => undefined);
+  });
   const mcp = new McpService(backend, { sessionTimeoutMs: cfg.sessionTimeoutMs, sweepIntervalMs: Math.min(30_000, cfg.sweepIntervalMs), logger });
 
   const app = Fastify({
@@ -119,7 +127,7 @@ export async function createManager(cfg: Config, deps: ManagerDeps = {}): Promis
     });
   }
 
-  const ctx = { cfg, auth, desktops, templates, actionLog, files, mcp, backend, runtime, logger, publicOrigin: () => publicOrigin() };
+  const ctx = { cfg, auth, desktops, templates, rebuilder, actionLog, files, mcp, backend, runtime, logger, publicOrigin: () => publicOrigin() };
   await app.register(
     async (scope) => {
       await registerRoutes(scope, ctx);
@@ -136,6 +144,7 @@ export async function createManager(cfg: Config, deps: ManagerDeps = {}): Promis
     auth,
     desktops,
     templates,
+    rebuilder,
     actionLog,
     mcp,
     backend,
@@ -143,6 +152,10 @@ export async function createManager(cfg: Config, deps: ManagerDeps = {}): Promis
     publicOrigin,
     async listen() {
       await desktops.init();
+      // Base-image tracking: a new desktop image rebuilds recipe-backed templates (in the background).
+      await templates.initBase();
+      void templates.pruneAll();
+      void rebuilder.autoRebuild();
       const address = await app.listen({ host: cfg.bind.host, port: cfg.bind.port });
       const port = (app.server.address() as { port: number }).port;
       const host = cfg.bind.host === "0.0.0.0" || cfg.bind.host === "::" ? "127.0.0.1" : cfg.bind.host;

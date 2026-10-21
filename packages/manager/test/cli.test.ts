@@ -61,6 +61,33 @@ describe("deskhand CLI", () => {
     expect((await cli(["template", "rollback", "base", "7"])).code).toBe(1);
   });
 
+  it("shows, edits, rebuilds, diffs and rolls back templates", async () => {
+    const d = await t.m.desktops.create({ sessionId: null, sessionLabel: null, actor: "test" });
+    const save = (desc: string) =>
+      fetch(`${t.url}/api/desktops/${d.id}/save-as-template`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${t.token}`, "content-type": "application/json" },
+        body: JSON.stringify({ name: "cli-tpl", description: { summary: desc, use_when: "CLI tests" } }),
+      }).then((r) => r.json());
+    expect((await save("first")).version).toBe(1);
+    expect((await save("second")).version).toBe(2);
+    const info = await cli(["template", "info", "cli-tpl"]);
+    expect(info.out).toContain("summary:     second");
+    expect(info.out).toMatch(/v2\*/);
+    expect((await cli(["template", "rebuild", "cli-tpl"])).err).toContain("no recipe");
+    const file = `${t.dataDir}/recipe.sh`;
+    (await import("node:fs")).writeFileSync(file, "echo hello > ~/hello.txt\n");
+    expect((await cli(["template", "recipe", "cli-tpl", file])).out).toContain("recipe updated");
+    expect((await cli(["template", "recipe", "cli-tpl"])).out).toBe("echo hello > ~/hello.txt\n");
+    const rb = await cli(["template", "rebuild", "cli-tpl"]);
+    expect(rb.out, rb.err).toContain("cli-tpl rebuilt as v3");
+    const diff = JSON.parse((await cli(["template", "diff", "cli-tpl", "1", "2"])).out);
+    expect(diff.description[0]).toMatchObject({ field: "summary", before: "first", after: "second" });
+    expect((await cli(["template", "rollback", "cli-tpl"])).out).toBe("cli-tpl now points at v2\n");
+    expect((await cli(["template", "ls"])).out).toMatch(/cli-tpl\s+v2 \(latest v3\)/);
+    await t.m.desktops.remove(d.id, "user");
+  });
+
   it("works with an explicit token and URL, and explains failures", async () => {
     const r = await cli(["ls", "--json"], { DESKHAND_TOKEN: t.token, DESKHAND_URL: t.url, DESKHAND_DATA_DIR: "/nonexistent" });
     expect(JSON.parse(r.out)).toEqual([]);

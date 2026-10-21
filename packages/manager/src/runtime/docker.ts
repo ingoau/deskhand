@@ -7,7 +7,7 @@ import tar from "tar-stream";
 import type { Logger } from "pino";
 import { DAEMON_PORT, DeskhandError, LABELS } from "@deskhand/shared";
 import type { Config } from "../config.js";
-import type { ContainerInfo, ContainerStats, DesktopSpec, HostInfo, PathResolution, Runtime } from "./types.js";
+import type { ContainerInfo, ContainerStats, DesktopSpec, ExecOptions, ExecResult, HostInfo, ImageInfo, PathResolution, Runtime } from "./types.js";
 
 /** Maps dockerode/engine errors onto deskhand error codes. */
 export function mapDockerError(e: unknown, fallback: "internal" | "image_pull_failed" = "internal"): DeskhandError {
@@ -330,13 +330,112 @@ export class DockerRuntime implements Runtime {
     }
   }
 
-  async removeImage(image: string): Promise<void> {
+  async removeImage(image: string): Promise<boolean> {
     try {
       await this.docker.getImage(image).remove();
+      return true;
     } catch (e) {
       const s = (e as { statusCode?: number }).statusCode;
-      if (s === 404 || s === 409) return;
+      if (s === 404) return true;
+      if (s === 409) return false; // a container still uses it
       throw mapDockerError(e);
+    }
+  }
+
+  async imageInfo(image: string): Promise<ImageInfo | null> {
+    try {
+      const i = await this.docker.getImage(image).inspect();
+      return { id: i.Id, created: new Date(i.Created).toISOString(), labels: i.Config?.Labels ?? {} };
+    } catch (e) {
+      if ((e as { statusCode?: number }).statusCode === 404) return null;
+      throw mapDockerError(e);
+    }
+  }
+
+  async exec(id: string, cmd: string[], opts: ExecOptions): Promise<ExecResult> {
+    // The time limit is enforced inside the container (coreutils timeout), so nothing keeps running after we give up.
+    const secs = Math.max(1, Math.ceil(opts.timeoutMs / 1000));
+    const wrapped = ["timeout", "--signal=TERM", "--kill-after=10", String(secs), ...cmd];
+    try {
+      const ex = await this.docker.getContainer(id).exec({
+        Cmd: wrapped,
+        User: opts.user ?? "root",
+        Env: opts.env,
+        WorkingDir: opts.workdir,
+        AttachStdout: true,
+        AttachStderr: true,
+        AttachStdin: false,
+        Tty: false,
+      });
+      const stream = (await ex.start({ hijack: true, stdin: false })) as unknown as NodeJS.ReadableStream;
+      const out = new PassThrough();
+      const err = new PassThrough();
+      const cap = 1024 * 1024;
+      let stdout = "";
+      let stderr = "";
+      out.on("data", (d: Buffer) => {
+        if (stdout.length < cap) stdout += d.toString("utf8");
+      });
+      err.on("data", (d: Buffer) => {
+        if (stderr.length < cap) stderr += d.toString("utf8");
+      });
+      this.docker.modem.demuxStream(stream, out, err);
+      await new Promise<void>((resolve, reject) => {
+        const guard = setTimeout(() => resolve(), opts.timeoutMs + 20_000);
+        stream.on("end", () => (clearTimeout(guard), resolve()));
+        stream.on("close", () => (clearTimeout(guard), resolve()));
+        stream.on("error", (e) => (clearTimeout(guard), reject(e)));
+      });
+      const info = await ex.inspect();
+      const exitCode = info.Running ? null : (info.ExitCode ?? null);
+      return { exitCode, stdout, stderr, timedOut: exitCode === 124 || exitCode === 137 || info.Running };
+    } catch (e) {
+      throw mapDockerError(e);
+    }
+  }
+
+  async writeFile(id: string, filePath: string, data: Buffer, opts: { uid: number; gid: number; mode: number }): Promise<void> {
+    const pack = tar.pack();
+    pack.entry({ name: path.posix.basename(filePath), size: data.length, mode: opts.mode, uid: opts.uid, gid: opts.gid, mtime: new Date() }, data);
+    pack.finalize();
+    const body = new PassThrough();
+    pack.pipe(body);
+    try {
+      await this.docker.getContainer(id).putArchive(body, { path: path.posix.dirname(filePath) });
+    } catch (e) {
+      throw mapDockerError(e);
+    }
+  }
+
+  async copyFromImage(image: string, paths: string[], id: string, beforeEach?: (path: string) => Promise<void>): Promise<string[]> {
+    let src: Docker.Container | undefined;
+    const copied: string[] = [];
+    try {
+      src = await this.docker.createContainer({
+        Image: image,
+        Entrypoint: ["/bin/true"],
+        Cmd: [],
+        Labels: this.baseLabels("helper"),
+        HostConfig: { NetworkMode: "none" },
+      });
+      const dst = this.docker.getContainer(id);
+      for (const p of paths) {
+        let stream: NodeJS.ReadableStream;
+        try {
+          stream = await src.getArchive({ path: p });
+        } catch (e) {
+          if ((e as { statusCode?: number }).statusCode === 404) continue;
+          throw e;
+        }
+        if (beforeEach) await beforeEach(p);
+        await dst.putArchive(stream as unknown as Readable, { path: path.posix.dirname(p) });
+        copied.push(p);
+      }
+      return copied;
+    } catch (e) {
+      throw mapDockerError(e);
+    } finally {
+      if (src) await src.remove({ force: true }).catch(() => undefined);
     }
   }
 

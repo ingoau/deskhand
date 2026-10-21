@@ -49,6 +49,10 @@ interface Behavior {
   unhealthy: boolean;
   /** Report this apiVersion from /health and /state. */
   apiVersion?: number;
+  /** Raw output of the manager's template manifest probe (FakeRuntime.exec of a "# deskhand-manifest" script). */
+  manifest?: unknown;
+  /** Number of /quiesce calls (read back by tests). */
+  quiesced?: number;
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -471,6 +475,7 @@ export class FakeDaemon {
         });
       case "POST /quiesce":
         await this.body(req);
+        this.behavior.quiesced = (this.behavior.quiesced ?? 0) + 1;
         return this.send(res, 200, { ok: true });
       case "GET /_fake/inputs":
         return this.send(res, 200, { inputs: this.inputs, vncInputs: this.vncInputs.map((b) => b.toString("base64")) });
