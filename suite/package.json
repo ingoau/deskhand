@@ -1,0 +1,9 @@
+{
+  "name": "@deskhand/suite",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reliability suite: real Claude Code sessions against a running deskhand (on demand, not in regular CI). Run suite/run.sh on the Docker host.",
+  "scripts": {
+    "suite": "./run.sh"
+  }
+}

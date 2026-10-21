@@ -91,9 +91,9 @@ async function state(id: string): Promise<DaemonState> {
   return (await daemonOf(id)).state();
 }
 
-/** Opens Chromium with the keyboard: ctrl+l, type the URL, Enter (Chromium itself is launched through desktop_exec). */
+/** Opens Chromium like an agent would: click its panel launcher (bottom left), ctrl+l, type the URL, Enter. */
 async function browse(s: Mcp, desktop: string, target: string, title: string) {
-  await exec(s, desktop, "nohup chromium about:blank >/dev/null 2>&1 &");
+  await call(s, "left_click", { desktop, coordinate: [16, 785] });
   await waitFor(async () => /chromium/i.test((await state(desktop)).title ?? ""), { timeout: 60_000, interval: 500, what: `Chromium window on ${desktop}` });
   await call(s, "key", { desktop, text: "ctrl+l" });
   await call(s, "type", { desktop, text: target });

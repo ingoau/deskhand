@@ -105,4 +105,9 @@ EOF
 chmod 0644 /run/deskhand/session.env /run/deskhand/screen.env
 
 log info "starting desktop ${W}x${H}x${D} for agent ${AGENT_UID}:${AGENT_GID}, TZ=$TZ, LANG=$DESK_LANG"
+# Docker's default nofile soft limit is ~1e9. Programs that close every fd before exec'ing a child
+# (tint2's launchers, x11vnc, some xdg helpers) then spin for minutes: clicking a panel launcher did
+# nothing (phase 2 finding). Cap the soft limit for the whole session; the hard limit stays, so
+# Chromium can still raise its own.
+if [ "$(ulimit -Sn)" = unlimited ] || [ "$(ulimit -Sn)" -gt 65536 ]; then ulimit -Sn 65536; fi
 exec /usr/bin/supervisord -n -c /etc/deskhand/supervisord.conf
