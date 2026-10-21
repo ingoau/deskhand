@@ -31,6 +31,7 @@ upgrades, backups and uninstalling.
 - [Configuration](docs/configuration.md): every environment variable
 - [Security](docs/security.md): what deskhand protects and what it doesn't; read it before exposing deskhand
 - [Sizing](docs/sizing.md): how many desktops a host runs
+- [Android](docs/android.md): running the Android emulator in a desktop (opt-in KVM, more memory/CPUs)
 - [Design](docs/design.md) and [plan](docs/plan.md): how it is built
 
 Licensed under Apache-2.0. Bundled third-party software keeps its own licenses; see [NOTICE](NOTICE). Contributions

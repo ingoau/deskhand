@@ -26,7 +26,9 @@ export interface FakeRuntimeOptions {
   /** Inclusive port range for fake daemons. Default from DESKHAND_FAKE_PORTS or 17250-17299. */
   ports?: [number, number];
   lockWaitMs?: number;
+  /** Host size the fake reports. Fixed defaults (32 GiB, 8 CPUs) keep tests independent of the machine. */
   memTotalBytes?: number;
+  ncpu?: number;
   /** Daemon apiVersion to report (to test version_mismatch). */
   apiVersion?: number;
   /** Whether the fake "Docker host" has /dev/kvm (default: DESKHAND_FAKE_KVM, else false). */
@@ -71,7 +73,7 @@ export class FakeRuntime implements Runtime {
 
   async hostInfo(): Promise<HostInfo> {
     this.check();
-    return { memTotalBytes: this.opts.memTotalBytes ?? os.totalmem(), ncpu: os.cpus().length };
+    return { memTotalBytes: this.opts.memTotalBytes ?? 32 * 1024 ** 3, ncpu: this.opts.ncpu ?? 8 };
   }
 
   async kvmAvailable() {
@@ -242,7 +244,7 @@ export class FakeRuntime implements Runtime {
   async stats(id: string): Promise<ContainerStats | null> {
     const c = this.containers.get(id);
     if (!c?.running) return null;
-    return { cpuPercent: 3.5, hostCpuPercent: 3.5 / os.cpus().length, memoryBytes: 150 * 1024 * 1024 };
+    return { cpuPercent: 3.5, hostCpuPercent: 3.5 / (this.opts.ncpu ?? 8), memoryBytes: 150 * 1024 * 1024 };
   }
 
   async diskUsage() {
