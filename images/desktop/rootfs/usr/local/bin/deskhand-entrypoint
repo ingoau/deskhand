@@ -119,5 +119,13 @@ AGENT_GID=$AGENT_GID
 EOF
 chmod 0644 /run/deskhand/session.env /run/deskhand/screen.env
 
+# --- open-file limit: the desktop-session defaults of a normal Linux login (systemd: soft 1024, hard
+# 524288). Docker's default (~10^9 for both) makes programs that close every possible fd before exec
+# spin for minutes: tint2's panel launchers (a click left a 100%-CPU child and no app), x11vnc. Programs
+# that need more raise their soft limit up to the hard one themselves (Java, Chromium do).
+# Soft first: a hard limit below the current soft one is refused.
+ulimit -Sn 1024 2>/dev/null || true
+ulimit -Hn 524288 2>/dev/null || true
+
 log info "starting desktop ${W}x${H}x${D} for agent ${AGENT_UID}:${AGENT_GID}, TZ=$TZ, LANG=$DESK_LANG"
 exec /usr/bin/supervisord -n -c /etc/deskhand/supervisord.conf
