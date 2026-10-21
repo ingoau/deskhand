@@ -38,7 +38,7 @@
       "optional": true,
       "expect": "the Mousepad window title has no unsaved-changes marker (*) — read with wmctrl -l inside the desktop",
       "desktopExec": { "desktopName": "suite-native-edit", "command": "wmctrl -l" },
-      "assert": "/ todo.txt - Mousepad/.test(stdout) && !/\\*~?\\/?.*todo.txt - Mousepad/.test(stdout)"
+      "assert": "/todo\\.txt - Mousepad/.test(stdout) && !/\\*[^\\n]*todo\\.txt - Mousepad/.test(stdout)"
     }
   ],
   "cleanup": ["DELETE /api/desktops/{id} (the persistent suite-native-edit desktop)"],

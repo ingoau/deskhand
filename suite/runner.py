@@ -408,6 +408,8 @@ const c = JSON.parse(require('fs').readFileSync(0, 'utf8'));
 const { toolCalls, stdout, body, thumbnails, saved } = c;
 const finalText = (id) => c.finalTexts[id] ?? '';
 const fixture = (name, req) => c.fixtures[name + ' ' + req];
+// Asserts name agents bare, e.g. finalText(reuse): each agent id is a global holding its own name.
+for (const id of Object.keys(c.finalTexts)) if (/^[A-Za-z_$][\w$]*$/.test(id)) globalThis[id] = id;
 let out;
 try { out = { ok: !!eval(c.assert) }; } catch (e) { out = { ok: false, error: String(e) }; }
 console.log(JSON.stringify(out));
@@ -432,6 +434,11 @@ def subst(v: str, ctx: Ctx) -> str:
 
 def docker_exec(container: str, cmd: str, user: str | None = None, timeout: int = 60) -> subprocess.CompletedProcess[str]:
     return subprocess.run(["docker", "exec", *(["-u", user] if user else []), container, "bash", "-lc", cmd], capture_output=True, text=True, timeout=timeout)
+
+
+def in_session(container: str, cmd: str, timeout: int = 60) -> subprocess.CompletedProcess[str]:
+    """Runs a command in a desktop as `agent` with the desktop session env (DISPLAY, D-Bus), like desktop_exec."""
+    return subprocess.run(["docker", "exec", "-u", "agent", container, "/usr/local/lib/deskhand/session", "bash", "-c", cmd], capture_output=True, text=True, timeout=timeout)
 
 
 def start_fixture(ctx: Ctx, task: str, name: str, fx: dict[str, Any]) -> str:
@@ -543,7 +550,7 @@ def run_json_task(ctx: Ctx, mon: Monitor, spec: dict[str, Any]) -> None:
             if not did:
                 raise RuntimeError(f"no desktop named {chk['desktopExec'].get('desktopName')}")
             container = desktop_container(ctx, mon, did)
-            data["stdout"] = docker_exec(container, chk["desktopExec"]["command"], user="agent").stdout
+            data["stdout"] = in_session(container, chk["desktopExec"]["command"]).stdout
         if chk.get("monitor"):
             did = agent_desktop(agent, chk)
             data["thumbnails"] = mon.thumbs.get(did or "", [])
