@@ -3,6 +3,8 @@
  * agent-change marker, rollback, pruning, recipe edits, diffs, list_changed and base-update rebuilds.
  * The real-image end-to-end version is test/e2e/templates.e2e.test.ts.
  */
+import fs from "node:fs";
+import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { templateLines } from "@deskhand/mcp";
@@ -230,5 +232,37 @@ describe("templates (fake runtime)", () => {
     const notes = (await api(t, "GET", "/api/templates/notes")).data;
     expect(notes).toMatchObject({ outdatedBase: true, hasRecipe: false });
     expect(templateLines([notes])).toContain("outdated base image");
+  });
+
+  it("reads template_save's recipe from recipe_file and keeps template_info compact", async () => {
+    const host = tmpDir("deskhand-recipe-");
+    const recipe = "# set up notes\nmkdir -p ~/notes\necho ready > ~/notes/README\n";
+    fs.writeFileSync(path.join(host, "recipe.sh"), recipe);
+    const { client, transport } = await connectMcp(t.url, t.token);
+    await client.callTool({ name: "desktop_start", arguments: { mounts: [{ path: host }] } });
+    await client.callTool({ name: "file_put", arguments: { host_path: path.join(host, "recipe.sh"), desktop_path: "/tmp/recipe.sh" } });
+    const both = await client.callTool({ name: "template_save", arguments: { name: "jot", recipe: "x", recipe_file: "/tmp/recipe.sh" } });
+    expect(textOf(both)).toContain("not both");
+    const save = await client.callTool({
+      name: "template_save",
+      arguments: { name: "jot", description: { summary: "Notes folder", use_when: "Jotting", setup_notes: "x".repeat(400) }, recipe_file: "/tmp/recipe.sh" },
+    });
+    expect(save.isError).toBeFalsy();
+    expect((await api(t, "GET", "/api/templates/jot")).data.recipe).toBe(recipe);
+    await client.callTool({ name: "template_save", arguments: { name: "jot", description: { summary: "Notes folder v2", use_when: "Jotting", setup_notes: "y".repeat(400) } } });
+
+    const raw = textOf(await client.callTool({ name: "template_info", arguments: { name: "jot" } }));
+    const info = JSON.parse(raw);
+    expect(info.recipe).toBe("4 lines; pass include_recipe: true to read it");
+    expect(info.versions.map((v: { version: number; changed: string }) => [v.version, v.changed])).toEqual([
+      [2, "summary; setup_notes"],
+      [1, "first version"],
+    ]);
+    // Old descriptions are not repeated per version.
+    expect(raw).not.toContain("x".repeat(400));
+    const full = JSON.parse(textOf(await client.callTool({ name: "template_info", arguments: { name: "jot", include_recipe: true } })));
+    expect(full.recipe).toBe(recipe);
+    await transport.terminateSession();
+    fs.rmSync(host, { recursive: true, force: true });
   });
 });

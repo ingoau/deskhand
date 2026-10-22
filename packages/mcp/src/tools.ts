@@ -324,15 +324,65 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
 
   reg.register({
     name: "template_info",
-    description: "Full description, manifest and version history of one template.",
-    inputSchema: obj({ name: { type: "string", description: "Template name." } }, ["name"]),
-    parse: z.object({ name: z.string().min(1).max(64) }).strict(),
+    description: "Full description, manifest, recent feedback and version history (what changed in each version) of one template. The recipe is left out unless include_recipe is true.",
+    inputSchema: obj(
+      {
+        name: { type: "string", description: "Template name." },
+        include_recipe: { type: "boolean", description: "Also return the current recipe script (default false)." },
+      },
+      ["name"],
+    ),
+    parse: z.object({ name: z.string().min(1).max(64), include_recipe: z.boolean().optional() }).strict(),
     scope: "session",
     async handler(args, ctx) {
       const t = ctx.backend.templateInfo(args.name);
-      // Per-version recipes repeat the current one; keep the output compact.
-      const versions = t.versions.map(({ recipe: _r, image: _i, ...v }) => v);
-      return { content: [text(JSON.stringify({ ...t, versions }, null, 1))] };
+      // Agents re-read every result on each later turn, so keep this compact: versions list what
+      // changed (field names, not full before/after text), and the recipe is opt-in.
+      const listChange = (label: string, c: { added: string[]; removed: string[] } | undefined) =>
+        c && (c.added.length || c.removed.length) ? `${label}${c.added.map((x) => ` +${x}`).join("")}${c.removed.map((x) => ` -${x}`).join("")}` : "";
+      const versions = t.versions.map((v) => {
+        const c = v.changes;
+        const changed = c
+          ? [
+              ...c.description.map((d) => d.field),
+              c.recipeChanged ? "recipe" : "",
+              c.baseChanged ? "base image" : "",
+              listChange("logins", c.loggedInSites),
+              listChange("extensions", c.extensions),
+              listChange("packages", c.packages),
+            ].filter(Boolean)
+          : [];
+        return {
+          version: v.version,
+          createdAt: v.createdAt,
+          savedBy: v.savedBy,
+          byAgent: v.byAgent,
+          rebuiltFrom: v.rebuiltFrom ?? undefined,
+          inUse: v.inUse || undefined,
+          hardware: v.hardware ?? undefined,
+          changed: c?.from == null ? "first version" : changed.length ? changed.join("; ") : "nothing recorded",
+        };
+      });
+      const recipeLines = t.recipe ? t.recipe.split("\n").length : 0;
+      const packages = t.versions.find((v) => v.version === t.currentVersion)?.packages ?? [];
+      const out = {
+        name: t.name,
+        default: t.isDefault || undefined,
+        currentVersion: t.currentVersion,
+        latestVersion: t.latestVersion !== t.currentVersion ? t.latestVersion : undefined,
+        description: t.description,
+        loggedInSites: t.loggedInSites,
+        extensions: t.extensions?.length ? t.extensions : undefined,
+        packages: packages.length ? packages : undefined,
+        hardware: t.hardware ?? undefined,
+        stale: t.stale ? (t.staleReason ?? true) : false,
+        outdatedBase: t.outdatedBase || undefined,
+        lastConfirmedAt: t.lastConfirmedAt,
+        recentFeedback: t.feedback.slice(0, 5).map((f) => `${f.kind} on v${f.version} (${f.at}): ${f.note}`),
+        recipe: args.include_recipe ? t.recipe : t.recipe ? `${recipeLines} lines; pass include_recipe: true to read it` : null,
+        versions,
+      };
+      return { content: [text(JSON.stringify(out, null, 1))] };
     },
   });
 
@@ -364,6 +414,10 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
           description:
             "Optional bash setup script for everything scriptable (config files, extensions, packages), replayed on a fresh desktop when the base image updates; logins are carried over from the snapshot. Runs as the agent user like desktop_exec; start it with the line `# deskhand: run-as=root` to run as root (e.g. apt-get install). Omit to keep the previous version's recipe; pass an empty string to remove it.",
         },
+        recipe_file: {
+          type: "string",
+          description: "Instead of `recipe`: absolute path of the recipe script inside the desktop (read before the snapshot, so it may be in /tmp). Saves resending a long script.",
+        },
         desktop: desktopProp,
       },
       ["name"],
@@ -383,12 +437,20 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
           .optional(),
         confirm_description: z.boolean().optional(),
         recipe: z.string().max(100_000).optional(),
+        recipe_file: z.string().startsWith("/").optional(),
         desktop: zDesktop,
       })
-      .strict(),
+      .strict()
+      .refine((a) => a.recipe === undefined || a.recipe_file === undefined, { message: "pass recipe or recipe_file, not both", path: ["recipe_file"] }),
     scope: "desktop",
     async handler(args, ctx) {
-      const t = await ctx.backend.saveTemplate(ctx.session, ctx.desktop!.desktop.id, args);
+      const { recipe_file, desktop: _d, ...input } = args;
+      if (recipe_file) {
+        const buf = await ctx.desktop!.daemon.getFile(recipe_file);
+        if (buf.length > 100_000) throw new DeskhandError("invalid_argument", `recipe_file ${recipe_file} is ${buf.length} bytes; a recipe can be at most 100000.`);
+        input.recipe = buf.toString("utf8");
+      }
+      const t = await ctx.backend.saveTemplate(ctx.session, ctx.desktop!.desktop.id, input);
       const lines = [
         `Saved template ${t.name} v${t.currentVersion}. Other agents can now start from it with desktop_start(template="${t.name}").`,
         `Logged-in sites recorded: ${t.loggedInSites.length ? t.loggedInSites.join(", ") : "none"}.${t.extensions?.length ? ` Extensions: ${t.extensions.join(", ")}.` : ""}${templateHardwareText(t.hardware) ? ` Desktops started from it get ${templateHardwareText(t.hardware)} by default.` : ""}`,

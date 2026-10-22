@@ -179,8 +179,12 @@ Code: `packages/manager/src/templates.ts` (records, rules), `template-ops.ts` (s
   (default `deskhand-template`).
 - **Description rule:** a new template needs `description` (summary + use_when). A new version must restate it
   or pass `confirm_description: true` to keep the previous one; otherwise the error quotes the current description.
-  An omitted `recipe` keeps the previous version's; `""` removes it. `PUT /api/templates/:name/recipe` edits the
-  current version's recipe in place (metadata only).
+  An omitted `recipe` keeps the previous version's; `""` removes it. `recipe_file` (a path inside the desktop, read
+  before the snapshot) replaces `recipe` so agents don't resend long scripts. `PUT /api/templates/:name/recipe` edits
+  the current version's recipe in place (metadata only).
+- **Token budget:** every tool result stays in the agent's context and is re-read on each later turn, so MCP output
+  is compact. `template_info` lists per-version changes as field names (no before/after text) and the last 5 feedback
+  notes, and returns the recipe only with `include_recipe: true`; the REST API still returns the full record.
 - **Manifest** (per version): a Python probe (stdlib sqlite3; Python is already in the image) runs in the desktop as
   the agent user via `docker exec` (not the daemon, so a user's takeover lock doesn't block a dashboard save). It
   copies each cookie DB (Chromium `Default|Profile */(Network/)Cookies`, Firefox `cookies.sqlite`) to a temp dir
