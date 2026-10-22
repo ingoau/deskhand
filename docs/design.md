@@ -291,6 +291,14 @@ coordinate, text?)`, `mouse_move(coordinate)`, `left_mouse_down()`, `left_mouse_
 - Images: the docs name PNG and JPEG; agent-facing results use those (WebP only for dashboard thumbnails).
 - deskhand extras beyond the toolset: input tools return a settled screenshot; `left_click_drag` accepts
   `duration_ms`/`hold_ms`.
+- `batch(actions, desktop?)` (`packages/mcp/src/batch.ts`, not part of the toolset): runs up to 50 steps, each
+  `{action: <input tool>, ...its args}` — pixel tools, `wait`, `desktop_exec`, `browser_*`; not `request_human` or
+  `batch` — in one call and returns one screenshot at the end. All steps are parsed with their own tool's schema
+  before any runs (no `desktop` per step). Each step runs through its tool's handler with the batch's context, so
+  the daemon's lock wait/generation check and settling apply per step; every step gets its own action-log entry
+  (the batch itself is not logged). The batch is screen-dependent as a whole and stops at the first step that
+  errors, throws `control_changed`, or whose response carries a newer generation (the user took over and handed
+  back while it ran): the result lists what ran, the hand-back note, and which steps were not performed.
 
 ## Manager and MCP implementation notes (phase 2)
 

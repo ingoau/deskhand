@@ -32,6 +32,7 @@ const EXPECTED: Record<string, string[]> = {
   file_get: ["desktop_path", "host_path"],
   desktop_exec: ["command", "timeout"],
   ui_tree: ["window"],
+  batch: ["actions"],
 };
 const NO_DESKTOP_ARG = new Set(["desktop_start", "desktop_list", "template_list", "template_info"]);
 
@@ -220,6 +221,75 @@ describe("MCP server", () => {
     expect(imagesOf(next)).toHaveLength(1);
     const log = await api(t, "GET", `/api/desktops/${id}/log`);
     expect(log.data.entries.find((e: { tool: string }) => e.tool === "left_click").outcome).toBe("unknown");
+    await transport.terminateSession();
+  });
+
+  it("batch runs several input actions in order and returns one screenshot", async () => {
+    const { client, transport } = await connectMcp(t.url, t.token);
+    const s = textOf(await client.callTool({ name: "desktop_start", arguments: {} }));
+    const id = /Desktop (\w+) is ready/.exec(s)![1]!;
+    const d = fake().daemonFor(id)!;
+    const ok = await client.callTool({
+      name: "batch",
+      arguments: {
+        actions: [
+          { action: "left_click", coordinate: [100, 200] },
+          { action: "type", text: "hello" },
+          { action: "key", text: "Return" },
+          { action: "desktop_exec", command: "echo batched" },
+        ],
+      },
+    });
+    expect(ok.isError).toBeFalsy();
+    expect(d.inputs.map((i) => i.input.action)).toEqual(["left_click", "type", "key"]);
+    expect(textOf(ok)).toMatch(/1\. left_click: left click at \[100, 200\]/);
+    expect(textOf(ok)).toContain("batched");
+    expect(imagesOf(ok)).toHaveLength(1);
+    const log = await api(t, "GET", `/api/desktops/${id}/log`);
+    const tools = log.data.entries.map((e: { tool: string }) => e.tool);
+    expect(tools).toEqual(expect.arrayContaining(["left_click", "type", "key", "desktop_exec"]));
+    expect(tools).not.toContain("batch");
+
+    // Bad steps are rejected before anything runs.
+    const before = d.inputs.length;
+    const bad = await client.callTool({ name: "batch", arguments: { actions: [{ action: "type", text: "x" }, { action: "left_click", coordinate: [1] }] } });
+    expect(bad.isError).toBe(true);
+    expect(textOf(bad)).toContain("actions.1 (left_click)");
+    const nested = await client.callTool({ name: "batch", arguments: { actions: [{ action: "request_human", reason: "x" }] } });
+    expect(textOf(nested)).toContain("cannot be a batch step");
+    const unknown = await client.callTool({ name: "batch", arguments: { actions: [{ action: "nope" }] } });
+    expect(textOf(unknown)).toContain("is not a tool");
+    expect(d.inputs.length).toBe(before);
+
+    // A failing step stops the batch and says what ran.
+    const stop = await client.callTool({
+      name: "batch",
+      arguments: { actions: [{ action: "type", text: "a" }, { action: "left_click", coordinate: [5000, 1] }, { action: "type", text: "b" }] },
+    });
+    expect(stop.isError).toBe(true);
+    expect(textOf(stop)).toContain("Step 2 (left_click) failed");
+    expect(textOf(stop)).toContain("1 step(s) after it were not run");
+    expect(d.inputs.slice(before).map((i) => i.input.text)).toEqual(["a"]);
+    expect(imagesOf(stop)).toHaveLength(1);
+    await transport.terminateSession();
+  });
+
+  it("batch stops when the user takes over mid-batch", async () => {
+    const { client, transport } = await connectMcp(t.url, t.token);
+    const s = textOf(await client.callTool({ name: "desktop_start", arguments: {} }));
+    const id = /Desktop (\w+) is ready/.exec(s)![1]!;
+    const d = fake().daemonFor(id)!;
+    d.behavior.inputDelayMs = 300;
+    const p = client.callTool({ name: "batch", arguments: { actions: [{ action: "type", text: "1" }, { action: "type", text: "2" }, { action: "type", text: "3" }] } });
+    await waitFor(() => d.inputs.length >= 1, { timeout: 5000 });
+    await api(t, "POST", `/api/desktops/${id}/lock`);
+    await api(t, "DELETE", `/api/desktops/${id}/lock`, { note: "fixed it" });
+    const res = await p;
+    d.behavior.inputDelayMs = 0;
+    expect(textOf(res)).toContain("The user handed control back: fixed it");
+    expect(textOf(res)).toMatch(/not performed/);
+    expect(d.inputs.length).toBeLessThan(3);
+    expect(imagesOf(res)).toHaveLength(1);
     await transport.terminateSession();
   });
 

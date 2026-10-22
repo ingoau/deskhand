@@ -136,6 +136,12 @@ export class ToolRegistry {
     return this.tools.get(name);
   }
 
+  /** Action-log summary for a call (the tool's own summarizer, else the shared one). */
+  summaryOf(name: string, args: Record<string, unknown>): string {
+    const def = this.tools.get(name);
+    return def?.summarize ? def.summarize(args) : this.summarize(name, args);
+  }
+
   names(): string[] {
     return [...this.tools.keys()];
   }
@@ -170,7 +176,7 @@ export class ToolRegistry {
     const parsed = def.parse.safeParse(rawArgs ?? {});
     if (!parsed.success) return errorResult("invalid_argument", zodMessage(parsed.error));
     const args = parsed.data as Record<string, unknown>;
-    const summary = def.summarize ? def.summarize(args) : this.summarize(name, args);
+    const summary = this.summaryOf(name, args);
     const { session, state } = base;
     const actor = session.principal.name;
     this.backend.sessionTouched(session.id);

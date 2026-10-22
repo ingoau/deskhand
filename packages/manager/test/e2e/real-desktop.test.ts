@@ -314,6 +314,30 @@ describe("real manager + real desktop image", () => {
     await waitFor(async () => (await containerOf(id)) === null, { timeout: 30_000, interval: 500, what: "container removed" });
   });
 
+  it("batch types into a native app and saves in one call", async () => {
+    const s = await mcp("batch");
+    const id = idOf(await call(s, "desktop_start", { name: "e2e batch" }));
+    await exec(s, id, "printf '' > /tmp/batch.txt");
+    const r = await call(s, "batch", {
+      desktop: id,
+      actions: [
+        { action: "desktop_exec", command: "nohup mousepad /tmp/batch.txt >/dev/null 2>&1 &" },
+        { action: "wait", duration: 3 },
+        { action: "type", text: "hello from one batch" },
+        { action: "key", text: "Return" },
+        { action: "type", text: "second line" },
+        { action: "key", text: "ctrl+s" },
+        { action: "wait", duration: 1 },
+      ],
+    });
+    expect(textOf(r)).toMatch(/7\. wait/);
+    expect(imagesOf(r)).toHaveLength(1);
+    // The effect inside the desktop: the file mousepad saved.
+    expect((await exec(s, id, "cat /tmp/batch.txt")).out).toContain("hello from one batch\nsecond line");
+    await s.transport.terminateSession();
+    await waitFor(async () => (await containerOf(id)) === null, { timeout: 30_000, interval: 500, what: "container removed" });
+  });
+
   it("runs actions on two desktops of one session at the same time (one per subagent)", async () => {
     const s = await mcp("parent");
     const [r1, r2] = await Promise.all([call(s, "desktop_start", { name: "sub 1" }), call(s, "desktop_start", { name: "sub 2" })]);
