@@ -11,6 +11,7 @@ import type { McpBackend, Principal, SessionEndReason, SessionInfo } from "./bac
 import { agentInstructions } from "./instructions.js";
 import { SessionState, ToolRegistry } from "./registry.js";
 import { registerTools } from "./tools.js";
+import { registerBatchTool } from "./batch.js";
 import { summarize } from "./describe.js";
 
 interface LiveSession {
@@ -67,6 +68,7 @@ export class McpService {
   ) {
     this.registry = new ToolRegistry(backend, summarize);
     registerTools(this.registry, () => backend.listTemplates(), () => backend.hardware?.() ?? null);
+    registerBatchTool(this.registry);
     this.unsubscribe = backend.onTemplatesChanged(() => this.notifyToolsChanged());
     this.timer = setInterval(() => void this.sweep(), opts.sweepIntervalMs ?? 30_000);
     this.timer.unref();
