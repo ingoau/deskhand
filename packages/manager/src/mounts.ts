@@ -6,7 +6,7 @@
  *   (the manager may run in a container, so resolution goes through the runtime's helper).
  * - Host paths for file_put/file_get follow the same rules.
  * - Built-in host protection (unless a DESKHAND_MOUNT_ALLOW entry covers the path): host system directories and
- *   dotfiles in home directories (~/.ssh, ~/.bashrc, ...) are refused, and so is mounting a whole home directory.
+ *   credential and shell-config dotfiles in home directories (~/.ssh, ~/.bashrc, ~/.config, ...) are refused, and so is mounting a whole home directory.
  *   Docker writes host files as root, so without this an agent could edit /etc or ~/.bashrc and run code on the host.
  */
 import path from "node:path";
@@ -34,8 +34,17 @@ const PROTECTED_TREES = ["/proc", "/sys", "/dev", "/run", "/etc", "/usr", "/bin"
 
 /** Host paths never read, written or mounted (unless allow-listed). */
 const HOST_PROTECTED_TREES = ["/etc", "/root", "/boot", "/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/proc", "/sys", "/dev", "/run", "/var/run", "/var/lib/docker", "/var/lib/containerd"];
-/** Dotfiles directly in a home directory. */
-const HOME_DOTFILE = /^\/(home|Users)\/[^/]+\/\.[^/]/;
+/**
+ * Home-directory entries that hold credentials or run code on login, in a shell or for a desktop session. Best
+ * effort: a DESKHAND_MOUNT_ALLOW list is the real boundary.
+ */
+const HOME_SENSITIVE = [
+  ".ssh", ".gnupg", ".password-store", ".aws", ".azure", ".gcloud", ".kube", ".docker", ".terraform.d", ".vault-token",
+  ".netrc", ".npmrc", ".pypirc", ".git-credentials", ".gitconfig", ".config", ".local/bin", ".local/lib", ".local/share/systemd",
+  ".claude", ".claude.json", ".codex", ".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile", ".zshrc",
+  ".zprofile", ".zshenv", ".zlogin", ".xprofile", ".xsessionrc", ".pam_environment",
+];
+const HOME_DOTFILE = new RegExp(`^/(home|Users)/[^/]+/(${HOME_SENSITIVE.map((e) => e.replace(/\./g, "\\.")).join("|")})(/|$)`);
 /** Directories that contain home dotfiles, so they may not be mounted whole. */
 const HOME_CONTAINER = /^\/(home|Users)(\/[^/]+)?$/;
 
@@ -96,7 +105,7 @@ export function evaluate(requested: string, res: PathResolution, ctx: PolicyCont
   if (!ctx.allow.some((a) => isWithin(src, a))) {
     const tree = HOST_PROTECTED_TREES.find((t) => isWithin(src, t) || (opts.forMount && isWithin(t, src)));
     if (tree) refuse(`${requested} is in the host's system directories (${tree}), which deskhand never exposes to desktops; choose another path or ask the user to allow it with DESKHAND_MOUNT_ALLOW.`);
-    if (HOME_DOTFILE.test(src)) refuse(`${requested} is a dotfile in a home directory (credentials and shell config), which deskhand never exposes to desktops; choose another path or ask the user to allow it with DESKHAND_MOUNT_ALLOW.`);
+    if (HOME_DOTFILE.test(src)) refuse(`${requested} holds credentials or shell configuration (home-directory dotfiles), which deskhand never exposes to desktops; choose another path or ask the user to allow it with DESKHAND_MOUNT_ALLOW.`);
     if (opts.forMount && HOME_CONTAINER.test(src)) refuse(`${requested} contains home-directory dotfiles (credentials and shell config); mount a project directory inside it instead.`);
   }
   if (ctx.allow.length > 0 && !ctx.allow.some((a) => isWithin(src, a))) {

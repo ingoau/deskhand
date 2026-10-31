@@ -32,7 +32,8 @@ Desktops start with **no host directories mounted**. Agents mount what they need
   protections below. Set an allow-list if your agents don't need the whole disk. For example,
   `DESKHAND_MOUNT_ALLOW=/home/you/projects`.
 - **Built-in host protection:** host system directories (`/etc`, `/root`, `/usr`, `/boot`, `/var/lib/docker`, …) and
-  dotfiles directly in a home directory (`~/.ssh`, `~/.bashrc`, `~/.config`, …) are refused for mounts, `file_put` and
+  home-directory dotfiles that hold credentials or run code (`~/.ssh`, `~/.aws`, `~/.bashrc`, `~/.config`,
+  `~/.local/bin`, …; the list is in `packages/manager/src/mounts.ts`) are refused for mounts, `file_put` and
   `file_get`, and so is mounting a whole home directory. Docker writes `file_get` files as root, so without this a
   prompt-injected agent could edit `/etc` or `~/.bashrc` and run code on the host. A path inside a
   `DESKHAND_MOUNT_ALLOW` entry skips these checks.
