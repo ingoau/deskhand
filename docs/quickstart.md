@@ -7,7 +7,7 @@ for Docker Desktop on macOS and Windows.
 **How long it takes:** on the reference host, the scripted run below went from `docker compose up -d` to the first
 click in a desktop in **15 seconds**. The images had already been downloaded. The one-time download is about
 0.9 GB compressed (desktop image about 730 MB, manager about 130 MB), which is about 1–2 minutes on a
-50–100 Mbit/s connection. Add the time it takes you to copy a token and paste one command, and five minutes is
+50–100 Mbit/s connection. Add the time it takes to paste two blocks of commands, and five minutes is
 comfortable.
 
 ## 1. Start deskhand
@@ -15,70 +15,80 @@ comfortable.
 ```sh
 mkdir deskhand && cd deskhand
 curl -fsSLO https://raw.githubusercontent.com/ingoau/deskhand/main/compose.yaml
-docker compose up -d
+docker compose up -d --wait
+docker compose exec deskhand deskhand login-link
 ```
 
-This starts one container, `deskhand`, with the manager, dashboard, MCP endpoint and CLI. It listens on
-`127.0.0.1:7480`, which is reachable only from this machine. To reach it from other machines, see
-[remote access](remote-access.md).
+This starts one container, `deskhand`, with the manager, dashboard, MCP endpoint and CLI. `--wait` returns once the
+manager answers its health check. It listens on `127.0.0.1:7480`, which is reachable only from this machine. To
+reach it from other machines, see [remote access](remote-access.md).
+
+The last command prints a dashboard login link. It works once and expires after 5 minutes. Open it in a browser on
+this machine and you are signed in for 30 days. Run it again whenever you need a new link.
 
 The manager downloads the desktop image in the background as soon as it starts. Desktops are separate containers
 that the manager starts when an agent asks for one. Compose doesn't manage them.
 
-## 2. Get the login link and the first token
+## 2. Connect your agent
 
-```sh
-docker compose logs deskhand | grep -E 'loginUrl|"token"'
-```
-
-On first start the manager logs two things:
-
-- `loginUrl`: a dashboard login link. It works once and expires after 5 minutes. Open it in a browser on this
-  machine and you are signed in for 30 days.
-- `token`: the first API token, named `default`, for your agent host. It looks like `dh_…`.
-
-Logs are JSON lines; the values you need are the `loginUrl` and `token` fields. The token is printed only on the
-first start. Lost it, or need more links or tokens? Use the CLI:
-
-```sh
-docker compose exec deskhand deskhand login-link          # a new one-time login link
-docker compose exec deskhand deskhand token create laptop # one token per agent host
-```
-
-## 3. Connect your agent
-
-The MCP endpoint is `http://127.0.0.1:7480/mcp` (Streamable HTTP). Every request needs the token as
-`Authorization: Bearer <token>`.
+Run the block for your agent from the `deskhand` directory. Each block creates a new API token with
+`deskhand token create`, named after the agent and the time, and registers deskhand with the agent. Running a block
+again replaces the agent's deskhand entry with one that uses a fresh token. Restart the agent afterwards.
 
 ### Claude Code
 
 ```sh
-claude mcp add --transport http deskhand http://127.0.0.1:7480/mcp --header "Authorization: Bearer <token>"
+claude mcp remove -s user deskhand >/dev/null 2>&1
+TOKEN=$(docker compose exec -T deskhand deskhand token create "claude-$(date +%Y%m%d-%H%M%S)") &&
+claude mcp add -s user --transport http deskhand http://127.0.0.1:7480/mcp --header "Authorization: Bearer $TOKEN"
 ```
 
-Add `-s user` to make it available in every project, not just the current directory. Check it with
-`claude mcp list`.
+`-s user` makes deskhand available in every project. Check it with `claude mcp list`.
 
-### Codex (untested)
-
-Codex reads MCP servers from `~/.codex/config.toml`. Streamable HTTP servers take a `url` and the *name* of an
-environment variable that holds the bearer token:
-
-```toml
-[mcp_servers.deskhand]
-url = "http://127.0.0.1:7480/mcp"
-bearer_token_env_var = "DESKHAND_TOKEN"
-```
-
-Then start Codex with the token in its environment:
+### Codex
 
 ```sh
-export DESKHAND_TOKEN=dh_…
-codex
+codex mcp remove deskhand >/dev/null 2>&1
+TOKEN=$(docker compose exec -T deskhand deskhand token create "codex-$(date +%Y%m%d-%H%M%S)") &&
+mkdir -p "${CODEX_HOME:-$HOME/.codex}" && cat >> "${CODEX_HOME:-$HOME/.codex}/config.toml" <<EOF
+
+[mcp_servers.deskhand]
+url = "http://127.0.0.1:7480/mcp"
+http_headers = { Authorization = "Bearer $TOKEN" }
+EOF
 ```
 
-This follows Codex's MCP documentation as of October 2026. It has not been tried with Codex yet; please report
-whether it works.
+This appends a `[mcp_servers.deskhand]` table to `~/.codex/config.toml`. Check it with `codex mcp list`.
+
+### OpenCode
+
+Needs `jq`.
+
+```sh
+TOKEN=$(docker compose exec -T deskhand deskhand token create "opencode-$(date +%Y%m%d-%H%M%S)") &&
+CONF="$HOME/.config/opencode/opencode.json" && mkdir -p "${CONF%/*}" && { [ -s "$CONF" ] || echo '{}' > "$CONF"; } &&
+jq --arg auth "Bearer $TOKEN" '."$schema" //= "https://opencode.ai/config.json"
+  | .mcp.deskhand = {type: "remote", url: "http://127.0.0.1:7480/mcp", headers: {Authorization: $auth}, enabled: true}' \
+  "$CONF" > "$CONF.tmp" && mv "$CONF.tmp" "$CONF"
+```
+
+This sets `mcp.deskhand` in `~/.config/opencode/opencode.json` and keeps the rest of the file. If you use
+`opencode.jsonc` with comments, add the same entry by hand instead.
+
+### Tokens
+
+On first start the manager also logs a token named `default` (`docker compose logs deskhand | grep '"token"'`). You
+don't need it if you used a block above. Manage tokens with the CLI or the dashboard's **settings** page:
+
+```sh
+docker compose exec deskhand deskhand token ls
+docker compose exec deskhand deskhand token revoke <name>
+docker compose exec deskhand deskhand token create laptop   # prints only the token, e.g. dh_…
+```
+
+The agent blocks above use `http://127.0.0.1:7480/mcp`, so they work for agents on this machine. For an agent on
+another machine, create a token here and use your public URL from [remote access](remote-access.md) in the agent's
+config.
 
 ### Other MCP clients
 
@@ -104,7 +114,7 @@ For example, in the JSON format that many clients share:
 Clients that only support stdio servers can go through a bridge such as `mcp-remote`
 (`npx mcp-remote http://127.0.0.1:7480/mcp --header "Authorization: Bearer <token>"`).
 
-## 4. First prompt
+## 3. First prompt
 
 Try something small that shows the whole loop:
 
@@ -118,9 +128,9 @@ Then something real:
 The agent calls `desktop_start` and gets a screenshot back. It then clicks, types and reads web pages with the
 `browser_*` tools. When its session ends, its desktop is removed. Ask for `persistent: true` to keep one.
 
-## 5. Watch it in the dashboard
+## 4. Watch it in the dashboard
 
-Open the login link from step 2 (or `deskhand login-link`). You will see:
+Open the login link from step 1 (or run `deskhand login-link` again). You will see:
 
 - **A tile per desktop** with a live thumbnail, the session and the agent's last action. A green dot means running,
   amber means the agent asked for you (`request_human`), violet means you have control.

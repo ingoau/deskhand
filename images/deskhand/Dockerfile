@@ -74,7 +74,9 @@ RUN chmod 0755 /usr/local/bin/deskhand /usr/local/bin/deskhand-entrypoint \
 VOLUME /data
 EXPOSE 7480
 STOPSIGNAL SIGTERM
-HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
+# --start-interval: probe every second while starting so `docker compose up -d --wait` returns quickly
+# (Docker Engine 25+; older engines ignore it and use --interval).
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --start-interval=1s --retries=3 \
   CMD ["node", "/opt/deskhand/healthcheck.mjs"]
 ENTRYPOINT ["/usr/local/bin/deskhand-entrypoint"]
 CMD ["node", "/opt/deskhand/app/packages/manager/dist/main.js"]
