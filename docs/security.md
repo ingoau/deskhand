@@ -28,8 +28,14 @@ Desktops start with **no host directories mounted**. Agents mount what they need
 - Files the agent writes to a mount are owned by `DESKHAND_AGENT_UID`/`DESKHAND_AGENT_GID` (default 1000:1000) on the
   host.
 - **Optional restrictions:** `DESKHAND_MOUNT_ALLOW` (only these trees) and `DESKHAND_MOUNT_DENY` (never these). Both are
-  empty by default, so an agent can mount any host directory the Docker daemon can see. Set an allow-list if your
-  agents don't need the whole disk. For example, `DESKHAND_MOUNT_ALLOW=/home/you/projects`.
+  empty by default, so an agent can mount any host directory the Docker daemon can see, apart from the built-in
+  protections below. Set an allow-list if your agents don't need the whole disk. For example,
+  `DESKHAND_MOUNT_ALLOW=/home/you/projects`.
+- **Built-in host protection:** host system directories (`/etc`, `/root`, `/usr`, `/boot`, `/var/lib/docker`, …) and
+  dotfiles directly in a home directory (`~/.ssh`, `~/.bashrc`, `~/.config`, …) are refused for mounts, `file_put` and
+  `file_get`, and so is mounting a whole home directory. Docker writes `file_get` files as root, so without this a
+  prompt-injected agent could edit `/etc` or `~/.bashrc` and run code on the host. A path inside a
+  `DESKHAND_MOUNT_ALLOW` entry skips these checks.
 - Paths are resolved through symlinks *on the host* before they are checked, by a short-lived helper container,
   because the manager can't see the host's filesystem. A symlink can't smuggle in a denied path.
 - Always refused: the Docker socket and every directory that contains it, and mount targets that would hide a
@@ -86,6 +92,11 @@ on that network:
 This is accepted: an agent tricked into running code already has worse options. If you run sensitive services on the
 host or the local network, keep in mind that desktops can reach them like any other container. An egress allow-list
 may come later.
+
+## Container hardening
+
+Desktops drop `NET_RAW`, `MKNOD`, `AUDIT_WRITE` and `SETFCAP`, run with `no-new-privileges` (setuid binaries can't
+regain root, even one a root recipe left in a template) and are capped at 8192 processes.
 
 ## Chromium sandbox
 

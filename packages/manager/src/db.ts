@@ -150,6 +150,12 @@ const MIGRATIONS: string[] = [
   ALTER TABLE desktops ADD COLUMN kvm INTEGER NOT NULL DEFAULT 0;
   ALTER TABLE template_versions ADD COLUMN hardware TEXT;
   `,
+  // Dashboard sessions signed in with an API token end when it is revoked (sessions from before this have no token id
+  // to check against, so they are ended).
+  `
+  ALTER TABLE web_sessions ADD COLUMN token_id TEXT;
+  UPDATE web_sessions SET revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE via = 'token' AND revoked_at IS NULL;
+  `,
 ];
 
 export function openDb(file: string): DB {

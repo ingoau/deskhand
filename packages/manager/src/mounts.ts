@@ -5,6 +5,9 @@
  * - Optional allow/deny lists, checked after resolving symlinks as the Docker host sees them
  *   (the manager may run in a container, so resolution goes through the runtime's helper).
  * - Host paths for file_put/file_get follow the same rules.
+ * - Built-in host protection (unless a DESKHAND_MOUNT_ALLOW entry covers the path): host system directories and
+ *   dotfiles in home directories (~/.ssh, ~/.bashrc, ...) are refused, and so is mounting a whole home directory.
+ *   Docker writes host files as root, so without this an agent could edit /etc or ~/.bashrc and run code on the host.
  */
 import path from "node:path";
 import { DeskhandError, type Mount } from "@deskhand/shared";
@@ -28,6 +31,13 @@ export interface ResolvedMount {
 const PROTECTED_EXACT = ["/tmp", "/var", "/home", "/home/agent", "/root", "/opt", "/srv", "/mnt", "/media"];
 /** Container paths a mount may not be placed at or inside. */
 const PROTECTED_TREES = ["/proc", "/sys", "/dev", "/run", "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/boot", "/var/run", "/var/lib", "/var/cache", "/tmp/.X11-unix", "/tmp/.ICE-unix"];
+
+/** Host paths never read, written or mounted (unless allow-listed). */
+const HOST_PROTECTED_TREES = ["/etc", "/root", "/boot", "/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/proc", "/sys", "/dev", "/run", "/var/run", "/var/lib/docker", "/var/lib/containerd"];
+/** Dotfiles directly in a home directory. */
+const HOME_DOTFILE = /^\/(home|Users)\/[^/]+\/\.[^/]/;
+/** Directories that contain home dotfiles, so they may not be mounted whole. */
+const HOME_CONTAINER = /^\/(home|Users)(\/[^/]+)?$/;
 
 export function normalizeHostPath(p: string): string {
   if (typeof p !== "string" || !p.startsWith("/")) throw new DeskhandError("invalid_argument", `Host paths must be absolute (start with /): "${p}".`);
@@ -82,6 +92,12 @@ export function evaluate(requested: string, res: PathResolution, ctx: PolicyCont
   for (const d of ctx.deny) {
     if (isWithin(src, d)) refuse(`${requested} is blocked by deskhand's mount rules (deny list); choose another path or ask the user.`);
     if (opts.forMount && isWithin(d, src)) refuse(`${requested} contains ${d}, which deskhand's mount rules block; choose a more specific path or ask the user.`);
+  }
+  if (!ctx.allow.some((a) => isWithin(src, a))) {
+    const tree = HOST_PROTECTED_TREES.find((t) => isWithin(src, t) || (opts.forMount && isWithin(t, src)));
+    if (tree) refuse(`${requested} is in the host's system directories (${tree}), which deskhand never exposes to desktops; choose another path or ask the user to allow it with DESKHAND_MOUNT_ALLOW.`);
+    if (HOME_DOTFILE.test(src)) refuse(`${requested} is a dotfile in a home directory (credentials and shell config), which deskhand never exposes to desktops; choose another path or ask the user to allow it with DESKHAND_MOUNT_ALLOW.`);
+    if (opts.forMount && HOME_CONTAINER.test(src)) refuse(`${requested} contains home-directory dotfiles (credentials and shell config); mount a project directory inside it instead.`);
   }
   if (ctx.allow.length > 0 && !ctx.allow.some((a) => isWithin(src, a))) {
     refuse(`${requested} is outside the directories deskhand allows (${ctx.allow.join(", ")}); choose a path inside one of them or ask the user.`);
