@@ -8,21 +8,54 @@ watch every desktop live in the dashboard and can take over at any moment.
 
 ## Quickstart
 
-You need Linux with Docker Engine and the Compose plugin (amd64 or arm64).
+**1. Start deskhand.** You need Linux with Docker Engine and the Compose plugin (amd64 or arm64).
 
 ```sh
 mkdir deskhand && cd deskhand
 curl -fsSLO https://raw.githubusercontent.com/ingoau/deskhand/main/compose.yaml
-docker compose up -d
-docker compose logs deskhand | grep -E 'loginUrl|"token"'   # dashboard login link + first API token
-claude mcp add --transport http deskhand http://127.0.0.1:7480/mcp --header "Authorization: Bearer <token>"
+docker compose up -d --wait
+docker compose exec deskhand deskhand login-link   # open it to watch your agents (single use, 5 minutes)
 ```
 
-Then ask your agent: *"Use deskhand: start a desktop, open a terminal from the panel, and tell me what you see."*
-Open the login link to watch it.
+**2. Connect your agent.** Run the block for your agent in the same directory. Each one creates a new API token and
+registers deskhand with the agent.
 
-The full walkthrough is in [docs/quickstart.md](docs/quickstart.md). It covers Codex and other MCP clients, the CLI,
-upgrades, backups and uninstalling.
+Claude Code:
+
+```sh
+claude mcp remove -s user deskhand >/dev/null 2>&1
+TOKEN=$(docker compose exec -T deskhand deskhand token create "claude-$(date +%Y%m%d-%H%M%S)") &&
+claude mcp add -s user --transport http deskhand http://127.0.0.1:7480/mcp --header "Authorization: Bearer $TOKEN"
+```
+
+Codex:
+
+```sh
+codex mcp remove deskhand >/dev/null 2>&1
+TOKEN=$(docker compose exec -T deskhand deskhand token create "codex-$(date +%Y%m%d-%H%M%S)") &&
+mkdir -p "${CODEX_HOME:-$HOME/.codex}" && cat >> "${CODEX_HOME:-$HOME/.codex}/config.toml" <<EOF
+
+[mcp_servers.deskhand]
+url = "http://127.0.0.1:7480/mcp"
+http_headers = { Authorization = "Bearer $TOKEN" }
+EOF
+```
+
+OpenCode (needs `jq`):
+
+```sh
+TOKEN=$(docker compose exec -T deskhand deskhand token create "opencode-$(date +%Y%m%d-%H%M%S)") &&
+CONF="$HOME/.config/opencode/opencode.json" && mkdir -p "${CONF%/*}" && { [ -s "$CONF" ] || echo '{}' > "$CONF"; } &&
+jq --arg auth "Bearer $TOKEN" '."$schema" //= "https://opencode.ai/config.json"
+  | .mcp.deskhand = {type: "remote", url: "http://127.0.0.1:7480/mcp", headers: {Authorization: $auth}, enabled: true}' \
+  "$CONF" > "$CONF.tmp" && mv "$CONF.tmp" "$CONF"
+```
+
+**3. Try it.** Restart your agent and ask: *"Use deskhand: start a desktop, open a terminal from the panel, and tell
+me what you see."* Watch it in the dashboard from step 1.
+
+The full walkthrough is in [docs/quickstart.md](docs/quickstart.md). It covers other MCP clients, agents on another
+machine, the CLI, upgrades, backups and uninstalling.
 
 ## Docs
 
