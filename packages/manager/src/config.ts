@@ -46,6 +46,8 @@ export interface Config {
   auth: boolean;
   /** Public origin + base, used in printed login links, e.g. https://desk.example.ts.net */
   publicUrl: string | null;
+  /** DESKHAND_ALLOWED_HOSTS: Host names accepted besides IPs, localhost, the public URL host and the hostname (`*`: any). */
+  allowedHosts: string[];
   tz: string | null;
   lang: string | null;
   dataDir: string;
@@ -265,6 +267,7 @@ export function parseConfig(env: Env = process.env): Config {
     basePath: normalizeBasePath(env.DESKHAND_BASE_PATH),
     auth: bool(env.DESKHAND_AUTH, true, "DESKHAND_AUTH"),
     publicUrl,
+    allowedHosts: list(env.DESKHAND_ALLOWED_HOSTS),
     tz: env.TZ || null,
     lang: env.LANG || null,
     dataDir: env.DESKHAND_DATA_DIR || "/data",

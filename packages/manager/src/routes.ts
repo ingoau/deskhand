@@ -48,16 +48,20 @@ export interface RouteContext {
 
 const STATE_CHANGING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
-function isPublic(url: string, method: string): boolean {
-  if (url === "/healthz") return true;
-  if (url === "/auth/login") return method === "GET" || method === "POST";
-  if (url === "/mcp") return true; // the MCP service authenticates itself
-  return !url.startsWith("/api/") && !url.startsWith("/auth/"); // dashboard static files
+/**
+ * Decided on the matched route pattern, not the raw URL: the router matches the decoded path, so a raw-URL check
+ * could be bypassed with percent-encoding (/%61pi/...). Unmatched URLs only reach the 404 handler.
+ */
+function isPublic(route: string | undefined, method: string): boolean {
+  if (route === undefined) return true;
+  if (route === "/healthz" || route === "/" || route === "/*") return true; // health, dashboard static files
+  if (route === "/auth/login") return method === "GET" || method === "POST";
+  return false;
 }
 
 /** Principal kinds allowed to manage credentials (not agent API tokens). */
 function requireOperator(p: Principal | undefined) {
-  if (!p || p.kind === "token") throw new DeskhandError("forbidden", "Managing tokens and login links needs the dashboard or the deskhand CLI, not an agent API token.");
+  if (!p || p.kind === "token" || (p.kind === "cookie" && p.via === "token")) throw new DeskhandError("forbidden", "Managing tokens and login links needs the deskhand CLI or a dashboard session from a login link (`deskhand login-link`), not an agent API token.");
 }
 
 export async function registerRoutes(app: FastifyInstance, ctx: RouteContext): Promise<void> {
@@ -65,10 +69,14 @@ export async function registerRoutes(app: FastifyInstance, ctx: RouteContext): P
   const base = cfg.basePath;
 
   app.addHook("onRequest", async (req, reply) => {
-    const rel = (req.url.split("?")[0] ?? "").slice(base.length) || "/";
+    if (!auth.hostAllowed({ headers: req.headers })) {
+      void reply.status(421).send(new DeskhandError("forbidden", "Unknown Host header; set DESKHAND_PUBLIC_URL or DESKHAND_ALLOWED_HOSTS to the name you reach deskhand by.").toJSON());
+      return reply;
+    }
+    const route = req.routeOptions.url === undefined ? undefined : req.routeOptions.url.slice(base.length) || "/";
     const isWs = (req.headers.upgrade ?? "").toLowerCase() === "websocket";
-    if (rel === "/mcp") return;
-    const pub = isPublic(rel, req.method);
+    if (route === "/mcp") return; // the MCP service authenticates itself
+    const pub = isPublic(route, req.method);
     const principal = pub ? undefined : auth.authenticate(req.headers);
     if (!pub && !principal) {
       void reply.status(401).header("www-authenticate", 'Bearer realm="deskhand"').send(new DeskhandError("unauthorized").toJSON());
@@ -129,10 +137,13 @@ export async function registerRoutes(app: FastifyInstance, ctx: RouteContext): P
   app.post("/auth/login", async (req, reply) => {
     const body = LoginRequest.parse(req.body ?? {});
     let ok = false;
-    if (body.token) ok = !!auth.verifyToken(body.token);
-    else if (body.code) ok = auth.consumeLoginCode(body.code);
+    let tokenId: string | undefined;
+    if (body.token) {
+      tokenId = auth.verifyToken(body.token)?.id;
+      ok = !!tokenId;
+    } else if (body.code) ok = auth.consumeLoginCode(body.code);
     if (!ok) throw new DeskhandError("unauthorized", body.code ? "That login link has expired or was already used; run `deskhand login-link` for a new one." : "That API token is not valid.");
-    const s = auth.createWebSession(body.token ? "token" : "link");
+    const s = tokenId ? auth.createWebSession("token", tokenId) : auth.createWebSession("link");
     setSessionCookie(req, reply, s.value);
     return reply.status(204).send();
   });

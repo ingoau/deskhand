@@ -230,7 +230,12 @@ export class DockerRuntime implements Runtime {
           Memory: spec.memoryBytes,
           NanoCpus: Math.round(spec.cpus * 1e9),
           ShmSize: 1024 ** 3,
-          ...(securityOpt ? { SecurityOpt: securityOpt } : {}),
+          // Hardening: nothing in a desktop needs raw sockets (ARP spoofing on the shared network), device nodes or
+          // file capabilities, and no-new-privileges stops setuid binaries (for example one a root recipe planted in a
+          // template) from regaining root. PidsLimit bounds fork bombs.
+          CapDrop: ["NET_RAW", "MKNOD", "AUDIT_WRITE", "SETFCAP"],
+          SecurityOpt: ["no-new-privileges:true", ...(securityOpt ?? [])],
+          PidsLimit: 8192,
           // The daemon key (and session env) live in /run/deskhand; as a tmpfs it is never captured by
           // `docker commit`, so template images cannot carry a desktop's key. 0755: agent processes source
           // session.env/screen.env from it (the entrypoint sets that mode anyway); the key file itself is 0600 root.

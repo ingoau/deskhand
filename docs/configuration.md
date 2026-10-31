@@ -61,6 +61,7 @@ These are read by `compose.yaml` itself, not by the manager.
 | `DESKHAND_LISTEN` | `0.0.0.0:7480` (image) | Address the manager process listens on inside its container. You normally never change it. |
 | `DESKHAND_BASE_PATH` | (empty) | Serve the dashboard, API, MCP endpoint and live view under a sub-path such as `/deskhand`, behind a reverse proxy that keeps the prefix. |
 | `DESKHAND_PUBLIC_URL` | (empty) | Origin that users and agents use to reach deskhand through a proxy, such as `https://host.tailnet.ts.net` (no path; the base path is added). Used in printed login links and MCP URLs. It is also accepted by the cross-site origin check. |
+| `DESKHAND_ALLOWED_HOSTS` | (empty) | Comma-separated extra host names the manager answers to (DNS rebinding guard). IP addresses, `localhost` and the `DESKHAND_PUBLIC_URL` host are always accepted (and the manager container's own hostname); requests with any other `Host` or `X-Forwarded-Host` get 421. If you reach deskhand by a host name such as `http://deskhost:7480` or a Tailscale MagicDNS name without setting `DESKHAND_PUBLIC_URL`, list that name here. `*` turns the check off. |
 | `DESKHAND_TRUST_PROXY` | `on` | Trust `X-Forwarded-Proto`/`-Host`/`-For` from a reverse proxy, so the session cookie is `Secure` behind HTTPS. Turn it off if clients can reach the manager's port directly *and* you don't want them to choose those headers. |
 | `DESKHAND_AUTH` | `on` | `off` disables login links, cookies and API tokens entirely. Only for a manager nobody else can reach. |
 

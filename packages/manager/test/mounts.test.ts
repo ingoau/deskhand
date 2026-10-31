@@ -58,6 +58,31 @@ describe("mount policy rules", () => {
     expect(code(() => evaluate("/home/me/work/escape", res("/home/me/work/escape", "/etc"), allow, m))).toBe("mount_refused");
   });
 
+  it("protects host system directories and home dotfiles unless allow-listed", () => {
+    const file = { forMount: false, mustExist: false };
+    const m = { forMount: true, mustExist: true };
+    for (const p of ["/etc/ld.so.preload", "/root/.profile", "/usr/local/bin/x", "/var/lib/docker/x", "/home/me/.bashrc", "/home/me/.ssh/authorized_keys"]) {
+      expect(code(() => evaluate(p, res(p), ctx(), file)), p).toBe("mount_refused");
+    }
+    // Through a symlink, too.
+    expect(code(() => evaluate("/home/me/work/rc", res("/home/me/work/rc", "/home/me/.bashrc"), ctx(), file))).toBe("mount_refused");
+    expect(code(() => evaluate("/home/me", res("/home/me"), ctx(), m))).toBe("mount_refused");
+    expect(code(() => evaluate("/home", res("/home"), ctx(), m))).toBe("mount_refused");
+    expect(code(() => evaluate("/var", res("/var"), ctx(), m))).toBe("mount_refused");
+    for (const p of ["/home/me/.local", "/home/me/.local/share", "/var/home/me", "/Users/me"]) expect(code(() => evaluate(p, res(p), ctx(), m)), p).toBe("mount_refused");
+    expect(evaluate("/home/me/.local/share/proj", res("/home/me/.local/share/proj"), ctx(), m)).toBe("/home/me/.local/share/proj");
+    for (const p of ["/home/me/.bash_aliases", "/home/me/.nvm/nvm.sh", "/var/home/me/.bashrc", "/var/spool/cron/crontabs/me"]) {
+      expect(code(() => evaluate(p, res(p), ctx(), file)), p).toBe("mount_refused");
+    }
+    expect(evaluate("/home/me/work/.git/config", res("/home/me/work/.git/config"), ctx(), file)).toBe("/home/me/work/.git/config");
+    expect(evaluate("/home/me/.t3/worktrees/x", res("/home/me/.t3/worktrees/x"), ctx(), file)).toBe("/home/me/.t3/worktrees/x");
+    expect(code(() => evaluate("/home/me/.config/autostart/x.desktop", res("/home/me/.config/autostart/x.desktop"), ctx(), file))).toBe("mount_refused");
+    expect(evaluate("/home/me/.configs", res("/home/me/.configs"), ctx(), file)).toBe("/home/me/.configs");
+    expect(evaluate("/home/me/out.png", res("/home/me/out.png"), ctx(), file)).toBe("/home/me/out.png");
+    // An explicit allow-list entry is the operator's choice.
+    expect(evaluate("/home/me", res("/home/me"), ctx({ allow: ["/home/me"] }), m)).toBe("/home/me");
+  });
+
   it("refuses missing paths and targets that would hide the desktop's system directories", () => {
     expect(code(() => evaluate("/nope", res("/nope", "/nope", "missing"), ctx(), { forMount: true, mustExist: true }))).toBe("invalid_argument");
     for (const t of ["/etc", "/usr/share", "/tmp", "/home", "/home/agent", "/proc/1", "/var"]) expect(code(() => checkTarget(t)), t).toBe("mount_refused");

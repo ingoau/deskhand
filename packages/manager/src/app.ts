@@ -65,7 +65,7 @@ export async function createManager(cfg: Config, deps: ManagerDeps = {}): Promis
   const db = deps.db ?? openDb(path.join(cfg.dataDir, "deskhand.db"));
   const runtime: Runtime = deps.runtime ?? (cfg.runtime === "fake" ? new FakeRuntime() : new DockerRuntime(cfg, logger));
   if (runtime instanceof FakeRuntime) runtime.images.add(cfg.desktopImage);
-  const auth = new AuthService(db, { enabled: cfg.auth, dataDir: cfg.dataDir, basePath: cfg.basePath, trustProxy: cfg.trustProxy, publicUrl: cfg.publicUrl });
+  const auth = new AuthService(db, { enabled: cfg.auth, dataDir: cfg.dataDir, basePath: cfg.basePath, trustProxy: cfg.trustProxy, publicUrl: cfg.publicUrl, allowedHosts: cfg.allowedHosts });
   const actionLog = new ActionLog(db, path.join(cfg.dataDir, "shots"), logger);
   const policy = new MountPolicy(cfg, runtime);
   const templates = new TemplateService(cfg, db, runtime, logger);

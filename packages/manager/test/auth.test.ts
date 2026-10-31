@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import http from "node:http";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { AuthService, COOKIE_NAME, originAllowed, sessionCookieOptions } from "../src/auth.js";
@@ -78,7 +79,7 @@ describe("API tokens", () => {
 
   it("web sessions last 30 days", () => {
     const { auth, now } = service();
-    const s = auth.createWebSession("token");
+    const s = auth.createWebSession("link");
     now.t += 29 * 86_400_000;
     expect(auth.verifyWebSession(s.value)).not.toBeNull();
     now.t += 2 * 86_400_000;
@@ -185,6 +186,46 @@ describe("auth over HTTP", () => {
     const bad = await fetch(`${t.url}/auth/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: "dh_bad" }) });
     expect(bad.status).toBe(401);
     expect(((await bad.json()) as { error: { code: string } }).error.code).toBe("unauthorized");
+  });
+
+  it("percent-encoded paths cannot skip authentication", async () => {
+    for (const p of ["/%61pi/desktops", "/%61%70%69/desktops", "/api/%64esktops", "/%61pi/templates", "/api/desktops/", "/%61uth/logout-all"]) {
+      const r = await fetch(`${t.url}${p}`, { method: p.includes("logout") ? "POST" : "GET" });
+      expect(r.status, p).toBe(401);
+    }
+  });
+
+  it("token sign-ins cannot manage credentials and end when the token is revoked", async () => {
+    const admin = JSON.parse(fs.readFileSync(path.join(t.dataDir, "admin.json"), "utf8")).token as string;
+    const c = await fetch(`${t.url}/api/tokens`, { method: "POST", headers: { authorization: `Bearer ${admin}`, "content-type": "application/json" }, body: JSON.stringify({ name: "agent-x" }) });
+    const { token, secret } = (await c.json()) as { token: { id: string }; secret: string };
+    const login = await fetch(`${t.url}/auth/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: secret }) });
+    expect(login.status).toBe(204);
+    const session = login.headers.get("set-cookie")!.split(";")[0]!;
+    expect((await fetch(`${t.url}/api/desktops`, { headers: { cookie: session } })).status).toBe(200);
+    const mint = await fetch(`${t.url}/api/tokens`, { method: "POST", headers: { cookie: session, origin: origin(), "content-type": "application/json" }, body: JSON.stringify({ name: "escalated" }) });
+    expect(mint.status).toBe(403);
+    expect((await fetch(`${t.url}/api/login-links`, { method: "POST", headers: { cookie: session, origin: origin() } })).status).toBe(403);
+    await fetch(`${t.url}/api/tokens/${token.id}`, { method: "DELETE", headers: { authorization: `Bearer ${admin}` } });
+    expect((await fetch(`${t.url}/api/desktops`, { headers: { cookie: session } })).status).toBe(401);
+  });
+
+  it("refuses unknown Host names (DNS rebinding)", async () => {
+    const get = (host: string) => getXfh(host);
+    const getXfh = (host: string, xfh?: string) =>
+      new Promise<number>((resolve, reject) => {
+        const u = new URL(t.url);
+        http.get({ host: u.hostname, port: u.port, path: "/deskhand/healthz", headers: { host, ...(xfh ? { "x-forwarded-host": xfh } : {}) } }, (res) => {
+          res.resume();
+          resolve(res.statusCode!);
+        }).on("error", reject);
+      });
+    expect(await get("evil.example:7480")).toBe(421);
+    expect(await getXfh("evil.example:7480", "127.0.0.1:7480")).toBe(421);
+    expect(await getXfh("127.0.0.1:7480", "evil.example")).toBe(421);
+    expect(await get(`127.0.0.1:${new URL(t.url).port}`)).toBe(200);
+    expect(await get("localhost:7480")).toBe(200);
+    expect(await get("[::1]:7480")).toBe(200);
   });
 
   it("revoked tokens stop working immediately, including for MCP", async () => {

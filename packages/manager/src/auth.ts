@@ -3,12 +3,16 @@
  * - One-time login links: 5 minutes, single use, code stripped by redirect.
  * - Session cookie: HttpOnly, SameSite=Strict, Secure over HTTPS, Path = base path, 30 days.
  * - Named API tokens, stored as SHA-256 hashes (they are 256-bit random secrets, so a slow hash adds nothing).
- * - Origin check for state-changing requests and websockets.
+ * - Origin check for state-changing requests and websockets; Host allow-list against DNS rebinding.
+ * - Dashboard sessions signed in with an API token are tied to it (revoking the token ends them) and, like the
+ *   token itself, cannot manage credentials.
  * - An admin credential file in the data dir for the CLI inside the manager container.
  */
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import net from "node:net";
+import os from "node:os";
 import type { IncomingHttpHeaders } from "node:http";
 import { DeskhandError, type ApiToken } from "@deskhand/shared";
 import type { DB } from "./db.js";
@@ -22,7 +26,7 @@ export const TOKEN_PREFIX = "dh_";
 
 export type Principal =
   | { kind: "token"; tokenId: string; name: string }
-  | { kind: "cookie"; sessionHash: string; name: "dashboard" }
+  | { kind: "cookie"; sessionHash: string; via: "link" | "token"; name: "dashboard" }
   | { kind: "admin"; name: "cli" }
   | { kind: "none"; name: "anonymous" };
 
@@ -91,6 +95,41 @@ export function originAllowed(req: RequestLike, opts: { trustProxy: boolean; pub
   return allowed.has(origin.toLowerCase());
 }
 
+/**
+ * DNS rebinding guard: a web page on evil.example that rebinds its name to the manager sends Host: evil.example
+ * (and a matching Origin, so the origin check alone does not stop it). Accept only IP literals, localhost names, the
+ * public URL's host, this machine's hostname and DESKHAND_ALLOWED_HOSTS (`*` turns the check off).
+ */
+export function hostAllowed(req: RequestLike, opts: { trustProxy: boolean; publicUrl: string | null; allowedHosts: string[] }): boolean {
+  if (opts.allowedHosts.includes("*")) return true;
+  // Both Host and (when trusting a proxy) X-Forwarded-Host must pass: after a rebind the page is same-origin and can set
+  // X-Forwarded-Host itself.
+  const names = [first(req.headers.host), opts.trustProxy ? first(req.headers["x-forwarded-host"]) : undefined];
+  return names.every((n) => n === undefined || hostNameAllowed(n, opts));
+}
+
+function hostNameAllowed(raw: string, opts: { publicUrl: string | null; allowedHosts: string[] }): boolean {
+  let name: string;
+  try {
+    name = new URL(`http://${raw}`).hostname.toLowerCase().replace(/\.$/, "");
+  } catch {
+    return false;
+  }
+  const bare = name.replace(/^\[|\]$/g, "");
+  if (net.isIP(bare)) return true;
+  if (name === "localhost" || name.endsWith(".localhost")) return true;
+  const allowed = new Set(opts.allowedHosts.map((h) => h.toLowerCase().replace(/\.$/, "")));
+  allowed.add(os.hostname().toLowerCase());
+  if (opts.publicUrl) {
+    try {
+      allowed.add(new URL(opts.publicUrl).hostname.toLowerCase());
+    } catch {
+      /* ignore */
+    }
+  }
+  return allowed.has(name);
+}
+
 export interface CookieOptions {
   httpOnly: true;
   sameSite: "strict";
@@ -138,6 +177,8 @@ export interface AuthOptions {
   basePath: string;
   trustProxy: boolean;
   publicUrl: string | null;
+  /** DESKHAND_ALLOWED_HOSTS: extra Host names the manager answers to (`*`: any). */
+  allowedHosts?: string[];
   now?: () => number;
 }
 
@@ -180,9 +221,17 @@ export class AuthService {
   }
 
   /** Revokes by id or name. Returns false if nothing matched. */
+  /** Revokes by id or name, with the dashboard sessions signed in with it. Returns false if nothing matched. */
   revokeToken(idOrName: string): boolean {
-    const r = this.db.prepare("UPDATE api_tokens SET revoked_at = ? WHERE (id = ? OR name = ?) AND revoked_at IS NULL").run(this.iso(), idOrName, idOrName);
-    return r.changes > 0;
+    const now = this.iso();
+    return this.db.transaction(() => {
+      const ids = this.db.prepare("SELECT id FROM api_tokens WHERE (id = ? OR name = ?) AND revoked_at IS NULL").all(idOrName, idOrName) as Array<{ id: string }>;
+      for (const { id } of ids) {
+        this.db.prepare("UPDATE api_tokens SET revoked_at = ? WHERE id = ?").run(now, id);
+        this.db.prepare("UPDATE web_sessions SET revoked_at = ? WHERE token_id = ? AND revoked_at IS NULL").run(now, id);
+      }
+      return ids.length > 0;
+    })();
   }
 
   verifyToken(value: string): { id: string; name: string } | null {
@@ -234,23 +283,32 @@ export class AuthService {
 
   // ---------------------------------------------------------------- web sessions
 
-  createWebSession(via: "link" | "token"): { value: string; expiresAt: string } {
+  /** `via: "token"` sessions record the token they were signed in with (tokenId). */
+  createWebSession(via: "link"): { value: string; expiresAt: string };
+  createWebSession(via: "token", tokenId: string): { value: string; expiresAt: string };
+  createWebSession(via: "link" | "token", tokenId?: string): { value: string; expiresAt: string } {
     const value = secret(32);
     const expiresAt = this.iso(this.now() + WEB_SESSION_TTL_MS);
-    this.db.prepare("INSERT INTO web_sessions (hash, created_at, expires_at, via) VALUES (?, ?, ?, ?)").run(sha256(value), this.iso(), expiresAt, via);
+    this.db
+      .prepare("INSERT INTO web_sessions (hash, created_at, expires_at, via, token_id) VALUES (?, ?, ?, ?, ?)")
+      .run(sha256(value), this.iso(), expiresAt, via, tokenId ?? null);
     return { value, expiresAt };
   }
 
-  verifyWebSession(value: string): string | null {
+  verifyWebSession(value: string): { hash: string; via: "link" | "token" } | null {
     const hash = sha256(value);
-    const row = this.db.prepare("SELECT hash, last_seen_at FROM web_sessions WHERE hash = ? AND revoked_at IS NULL AND expires_at > ?").get(hash, this.iso()) as
-      | { hash: string; last_seen_at: string | null }
-      | undefined;
+    const row = this.db
+      .prepare(
+        `SELECT s.hash, s.last_seen_at, s.via FROM web_sessions s
+         WHERE s.hash = ? AND s.revoked_at IS NULL AND s.expires_at > ?
+           AND (s.via != 'token' OR EXISTS (SELECT 1 FROM api_tokens t WHERE t.id = s.token_id AND t.revoked_at IS NULL))`,
+      )
+      .get(hash, this.iso()) as { hash: string; last_seen_at: string | null; via: string } | undefined;
     if (!row) return null;
     if (!row.last_seen_at || this.now() - Date.parse(row.last_seen_at) > 60_000) {
       this.db.prepare("UPDATE web_sessions SET last_seen_at = ? WHERE hash = ?").run(this.iso(), hash);
     }
-    return hash;
+    return { hash, via: row.via === "link" ? "link" : "token" };
   }
 
   revokeWebSession(value: string): void {
@@ -295,8 +353,8 @@ export class AuthService {
     if (opts.allowCookie) {
       const c = parseCookies(headers.cookie)[COOKIE_NAME];
       if (c) {
-        const hash = this.verifyWebSession(c);
-        if (hash) return { kind: "cookie", sessionHash: hash, name: "dashboard" };
+        const s = this.verifyWebSession(c);
+        if (s) return { kind: "cookie", sessionHash: s.hash, via: s.via, name: "dashboard" };
       }
     }
     if (!this.enabled) return { kind: "none", name: "anonymous" };
@@ -305,6 +363,10 @@ export class AuthService {
 
   sessionCookieOptions(req: RequestLike): CookieOptions {
     return sessionCookieOptions(req, this.opts.basePath, this.opts.trustProxy);
+  }
+
+  hostAllowed(req: RequestLike): boolean {
+    return hostAllowed(req, { trustProxy: this.opts.trustProxy, publicUrl: this.opts.publicUrl, allowedHosts: this.opts.allowedHosts ?? [] });
   }
 
   originAllowed(req: RequestLike, requireHeader: boolean): boolean {
