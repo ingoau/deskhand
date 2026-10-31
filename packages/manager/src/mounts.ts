@@ -33,7 +33,7 @@ const PROTECTED_EXACT = ["/tmp", "/var", "/home", "/home/agent", "/root", "/opt"
 const PROTECTED_TREES = ["/proc", "/sys", "/dev", "/run", "/etc", "/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/boot", "/var/run", "/var/lib", "/var/cache", "/tmp/.X11-unix", "/tmp/.ICE-unix"];
 
 /** Host paths never read, written or mounted (unless allow-listed). */
-const HOST_PROTECTED_TREES = ["/etc", "/root", "/boot", "/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/proc", "/sys", "/dev", "/run", "/var/run", "/var/lib/docker", "/var/lib/containerd"];
+const HOST_PROTECTED_TREES = ["/etc", "/root", "/boot", "/usr", "/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32", "/proc", "/sys", "/dev", "/run", "/var/run", "/var/lib/docker", "/var/lib/containerd", "/var/spool/cron"];
 /**
  * Home-directory entries that hold credentials or run code on login, in a shell or for a desktop session. Best
  * effort: a DESKHAND_MOUNT_ALLOW list is the real boundary.
@@ -41,12 +41,15 @@ const HOST_PROTECTED_TREES = ["/etc", "/root", "/boot", "/usr", "/bin", "/sbin",
 const HOME_SENSITIVE = [
   ".ssh", ".gnupg", ".password-store", ".aws", ".azure", ".gcloud", ".kube", ".docker", ".terraform.d", ".vault-token",
   ".netrc", ".npmrc", ".pypirc", ".git-credentials", ".gitconfig", ".config", ".local/bin", ".local/lib", ".local/share/systemd",
-  ".claude", ".claude.json", ".codex", ".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile", ".zshrc",
-  ".zprofile", ".zshenv", ".zlogin", ".xprofile", ".xsessionrc", ".pam_environment",
+  ".claude", ".claude.json", ".codex", ".nvm", ".cargo", ".rustup", ".pyenv", ".rbenv", ".bashrc", ".bash_aliases",
+  ".bash_profile", ".bash_login", ".bash_logout", ".profile", ".zshrc", ".zprofile", ".zshenv", ".zlogin", ".xprofile",
+  ".xsession", ".xsessionrc", ".xinitrc", ".pam_environment",
 ];
-const HOME_DOTFILE = new RegExp(`^/(home|Users)/[^/]+/(${HOME_SENSITIVE.map((e) => e.replace(/\./g, "\\.")).join("|")})(/|$)`);
-/** Directories that contain home dotfiles, so they may not be mounted whole. */
-const HOME_CONTAINER = /^\/(home|Users)(\/[^/]+)?$/;
+/** Home roots: /home, macOS /Users, Fedora Atomic's /var/home (/home resolves there). */
+const HOME_ROOT = "/(?:home|Users|var/home)/[^/]+";
+const HOME_DOTFILE = new RegExp(`^${HOME_ROOT}/(${HOME_SENSITIVE.map((e) => e.replace(/\./g, "\\.")).join("|")})(/|$)`);
+/** Directories that contain protected home entries, so they may not be mounted whole (/home, ~, ~/.local, ~/.local/share). */
+const HOME_CONTAINER = new RegExp(`^(/(?:home|Users|var/home)|${HOME_ROOT}(/\\.local(/share)?)?)$`);
 
 export function normalizeHostPath(p: string): string {
   if (typeof p !== "string" || !p.startsWith("/")) throw new DeskhandError("invalid_argument", `Host paths must be absolute (start with /): "${p}".`);

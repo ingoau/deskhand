@@ -211,15 +211,18 @@ describe("auth over HTTP", () => {
   });
 
   it("refuses unknown Host names (DNS rebinding)", async () => {
-    const get = (host: string) =>
+    const get = (host: string) => getXfh(host);
+    const getXfh = (host: string, xfh?: string) =>
       new Promise<number>((resolve, reject) => {
         const u = new URL(t.url);
-        http.get({ host: u.hostname, port: u.port, path: "/deskhand/healthz", headers: { host } }, (res) => {
+        http.get({ host: u.hostname, port: u.port, path: "/deskhand/healthz", headers: { host, ...(xfh ? { "x-forwarded-host": xfh } : {}) } }, (res) => {
           res.resume();
           resolve(res.statusCode!);
         }).on("error", reject);
       });
     expect(await get("evil.example:7480")).toBe(421);
+    expect(await getXfh("evil.example:7480", "127.0.0.1:7480")).toBe(421);
+    expect(await getXfh("127.0.0.1:7480", "evil.example")).toBe(421);
     expect(await get(`127.0.0.1:${new URL(t.url).port}`)).toBe(200);
     expect(await get("localhost:7480")).toBe(200);
     expect(await get("[::1]:7480")).toBe(200);

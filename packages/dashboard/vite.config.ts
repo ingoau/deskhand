@@ -28,8 +28,6 @@ export default defineConfig(async ({ command, isPreview }) => {
     },
     // noVNC uses top-level await.
     build: { target: "es2022", outDir: "dist", emptyOutDir: true, sourcemap: false, chunkSizeWarningLimit: 700 },
-    esbuild: { target: "es2022" },
-    optimizeDeps: { esbuildOptions: { target: "es2022" } },
     server: {
       host: "127.0.0.1",
       proxy: mockOn

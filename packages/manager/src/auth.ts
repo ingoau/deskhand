@@ -102,18 +102,23 @@ export function originAllowed(req: RequestLike, opts: { trustProxy: boolean; pub
  */
 export function hostAllowed(req: RequestLike, opts: { trustProxy: boolean; publicUrl: string | null; allowedHosts: string[] }): boolean {
   if (opts.allowedHosts.includes("*")) return true;
-  const raw = requestHost(req, opts.trustProxy);
-  if (!raw) return true; // HTTP/1.0 without Host: not something a browser sends
+  // Both Host and (when trusting a proxy) X-Forwarded-Host must pass: after a rebind the page is same-origin and can set
+  // X-Forwarded-Host itself.
+  const names = [first(req.headers.host), opts.trustProxy ? first(req.headers["x-forwarded-host"]) : undefined];
+  return names.every((n) => n === undefined || hostNameAllowed(n, opts));
+}
+
+function hostNameAllowed(raw: string, opts: { publicUrl: string | null; allowedHosts: string[] }): boolean {
   let name: string;
   try {
-    name = new URL(`http://${raw}`).hostname.toLowerCase();
+    name = new URL(`http://${raw}`).hostname.toLowerCase().replace(/\.$/, "");
   } catch {
     return false;
   }
   const bare = name.replace(/^\[|\]$/g, "");
   if (net.isIP(bare)) return true;
   if (name === "localhost" || name.endsWith(".localhost")) return true;
-  const allowed = new Set(opts.allowedHosts.map((h) => h.toLowerCase()));
+  const allowed = new Set(opts.allowedHosts.map((h) => h.toLowerCase().replace(/\.$/, "")));
   allowed.add(os.hostname().toLowerCase());
   if (opts.publicUrl) {
     try {

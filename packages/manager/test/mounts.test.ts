@@ -69,6 +69,11 @@ describe("mount policy rules", () => {
     expect(code(() => evaluate("/home/me", res("/home/me"), ctx(), m))).toBe("mount_refused");
     expect(code(() => evaluate("/home", res("/home"), ctx(), m))).toBe("mount_refused");
     expect(code(() => evaluate("/var", res("/var"), ctx(), m))).toBe("mount_refused");
+    for (const p of ["/home/me/.local", "/home/me/.local/share", "/var/home/me", "/Users/me"]) expect(code(() => evaluate(p, res(p), ctx(), m)), p).toBe("mount_refused");
+    expect(evaluate("/home/me/.local/share/proj", res("/home/me/.local/share/proj"), ctx(), m)).toBe("/home/me/.local/share/proj");
+    for (const p of ["/home/me/.bash_aliases", "/home/me/.nvm/nvm.sh", "/var/home/me/.bashrc", "/var/spool/cron/crontabs/me"]) {
+      expect(code(() => evaluate(p, res(p), ctx(), file)), p).toBe("mount_refused");
+    }
     expect(evaluate("/home/me/work/.git/config", res("/home/me/work/.git/config"), ctx(), file)).toBe("/home/me/work/.git/config");
     expect(evaluate("/home/me/.t3/worktrees/x", res("/home/me/.t3/worktrees/x"), ctx(), file)).toBe("/home/me/.t3/worktrees/x");
     expect(code(() => evaluate("/home/me/.config/autostart/x.desktop", res("/home/me/.config/autostart/x.desktop"), ctx(), file))).toBe("mount_refused");
