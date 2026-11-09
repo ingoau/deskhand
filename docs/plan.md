@@ -207,7 +207,7 @@ claude mcp add --transport http deskhand http://127.0.0.1:7480/mcp --header "Aut
 | `template_save(name, description, recipe?)` | Saves this desktop as a new template version |
 | `template_feedback(ok | problem, note)` | Reports whether the template this desktop started from worked |
 | `request_human(reason)` | Flags the desktop for takeover and blocks until you hand back (with your note) or a timeout of about 10 minutes, then returns "still waiting" so the agent can call again |
-| `file_put(host_path, desktop_path)` · `file_get(desktop_path, host_path)` | Copies files into or out of a desktop; host paths follow the mount policy |
+| `file_put(host_path, desktop_path)` · `file_get(desktop_path, host_path?)` | Copies files into or out of a desktop; host paths follow the mount policy. `file_get` without `host_path` returns an image file inline |
 
 **Computer-use tools** — names and parameters copied exactly from Anthropic's `computer_toolset_20260801`, the toolset Claude is trained on; coordinates are pixels of the 1280×800 screenshot, so no scaling.
 
@@ -220,7 +220,7 @@ claude mcp add --transport http deskhand http://127.0.0.1:7480/mcp --header "Aut
 | `cursor_position()` | Current pointer position |
 | `scroll(scroll_direction, scroll_amount, coordinate?, text?)` | Scroll at a point |
 | `type(text)` · `key(text, repeat?)` · `hold_key(text, duration)` | Text entry, key combos such as `ctrl+l`, held keys |
-| `wait(duration)` | Pause, then return a fresh screenshot |
+| `wait(duration, until?, region?)` | Pause, then return a fresh screenshot; `until: "change"` returns early once the screen (or region) changes |
 
 - **Lazy start:** no container exists until the agent calls `desktop_start`, so sessions that never need a desktop cost nothing. Any other tool called first starts one with defaults.
 - **Screenshots after actions:** input tools return a screenshot once the screen settles, saving a round trip. Screenshots are sent as compressed PNG or WebP so they stay under agent hosts' MCP output limits.
@@ -266,7 +266,8 @@ Pixel clicking is the fallback, not the only way in: each desktop also exposes i
 | Tool | Channel | Use it for |
 | `browser_*` (navigate, snapshot, click, type, fill_form, select_option, evaluate, tabs and more) | Playwright MCP (`@playwright/mcp`) embedded in the manager, attached over CDP to the desktop's own Chromium | Web tasks: act by selector or accessibility ref, fall back to pixels for canvas or anti-automation pages |
 | `ui_tree(window?)` | AT-SPI accessibility bus | Native apps: named elements with roles, states and bounding boxes; click an element's centre instead of estimating |
-| `desktop_exec(command, timeout?)` | Shell inside the desktop container, as the `agent` user | Launch apps, open files, read or set the clipboard, inspect state without clicking through menus |
+| `desktop_exec(command, timeout?, background?)` | Shell inside the desktop container, as the `agent` user, after loading the login profile | Launch apps, open files, read or set the clipboard, inspect state without clicking through menus |
+| `exec_wait(job, timeout?, tail?, cancel?)` | Waits for (or stops) a `desktop_exec` background job; returns its exit code and the tail of its output | Downloads, SDK installs, builds and recordings without sleep loops or long timeouts |
 
 - **Same browser, not a second one:** Chromium starts with remote debugging that is reachable only through the daemon's authenticated proxy, so DOM actions show up live in the dashboard.
 - **Accessibility setup in the image:** the at-spi2 bus runs at startup, Chromium starts with `--force-renderer-accessibility`, and GTK and Qt accessibility are enabled by environment variables.
