@@ -10,7 +10,7 @@
  */
 import { z } from "zod";
 import { DeskhandError, ERROR_MESSAGES } from "@deskhand/shared";
-import { handbackNote, text, UNKNOWN_NOTE, type Content, type ToolContext, type ToolOutput, type ToolRegistry } from "./registry.js";
+import { handbackNote, text, zodMessage, UNKNOWN_NOTE, type Content, type ToolContext, type ToolOutput, type ToolRegistry } from "./registry.js";
 
 export const BATCH_MAX_STEPS = 50;
 /** Input tools that cannot be a step: request_human waits for the user, and batches don't nest. */
@@ -73,8 +73,7 @@ export function registerBatchTool(reg: ToolRegistry): void {
         if ("desktop" in rest) throw new DeskhandError("invalid_argument", `${where}: steps take no desktop; pass it on the batch.`);
         const parsed = reg.get(tool)!.parse.safeParse(rest);
         if (!parsed.success) {
-          const issue = (parsed.error as { issues?: Array<{ path: PropertyKey[]; message: string }> }).issues?.[0];
-          throw new DeskhandError("invalid_argument", `${where}: ${issue ? `${issue.path.map(String).join(".")}${issue.path.length ? ": " : ""}${issue.message}` : ERROR_MESSAGES.invalid_argument}`);
+          throw new DeskhandError("invalid_argument", `${where}: ${zodMessage(parsed.error, tool)}`);
         }
         steps.push({ tool, args: parsed.data as Record<string, unknown> });
       }

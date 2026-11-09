@@ -157,7 +157,7 @@ describe("real manager + real desktop image", () => {
     const s = await mcp("contract");
     const { tools } = await s.client.listTools();
     const byName = new Map(tools.map((x) => [x.name, x]));
-    const extras: Record<string, string[]> = { left_click_drag: ["duration_ms", "hold_ms"] };
+    const extras: Record<string, string[]> = { left_click_drag: ["duration_ms", "hold_ms"], wait: ["until", "region"] };
     for (const [name, params] of Object.entries(COMPUTER_TOOLSET)) {
       const tool = byName.get(name);
       expect(tool, name).toBeDefined();

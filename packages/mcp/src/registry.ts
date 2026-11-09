@@ -108,12 +108,43 @@ export function errorResult(code: string, message: string, notes: string[] = [])
   return { content: [...notes.map(text), text(`Error (${code}): ${message}`)], isError: true };
 }
 
-function zodMessage(e: unknown): string {
-  const issues = (e as { issues?: Array<{ path: PropertyKey[]; message: string }> })?.issues;
+/**
+ * Hints for argument names agents often guess (seen in real sessions): "<tool>.<key>" or "*.<key>" → hint.
+ */
+const ARG_HINTS: Record<string, string> = {
+  "*.seconds": "use `duration` (seconds)",
+  "*.secs": "use `duration` (seconds)",
+  "*.direction": "use `scroll_direction` (up, down, left or right)",
+  "*.amount": "use `scroll_amount`",
+  "key.key": "use `text`, e.g. \"ctrl+s\" or \"Return\"",
+  "key.keys": "use `text`, e.g. \"ctrl+s\" or \"Return\"",
+  "hold_key.key": "use `text`",
+  "left_mouse_down.coordinate": "it presses at the current pointer position; move there first with mouse_move",
+  "left_mouse_up.coordinate": "it releases at the current pointer position; move there first with mouse_move",
+  "desktop_exec.cmd": "use `command`",
+  "desktop_exec.seconds": "use `timeout` (seconds)",
+  "exec_wait.seconds": "use `timeout` (seconds)",
+  "exec_wait.id": "use `job`",
+  "wait.timeout": "use `duration` (seconds)",
+};
+
+export function argHint(tool: string, key: string): string | undefined {
+  return ARG_HINTS[`${tool}.${key}`] ?? ARG_HINTS[`*.${key}`];
+}
+
+export function zodMessage(e: unknown, tool?: string): string {
+  const issues = (e as { issues?: Array<{ code?: string; path: PropertyKey[]; message: string; keys?: string[] }> })?.issues;
   if (!issues?.length) return ERROR_MESSAGES.invalid_argument;
   return issues
     .slice(0, 5)
-    .map((i) => `${i.path.length ? i.path.map(String).join(".") + ": " : ""}${i.message}`)
+    .map((i) => {
+      let m = `${i.path.length ? i.path.map(String).join(".") + ": " : ""}${i.message}`;
+      if (tool && i.code === "unrecognized_keys") {
+        const hints = (i.keys ?? []).map((k) => argHint(tool, k)).filter(Boolean);
+        if (hints.length) m += ` (${hints.join("; ")})`;
+      }
+      return m;
+    })
     .join("; ");
 }
 
@@ -174,7 +205,7 @@ export class ToolRegistry {
     if (!def) return errorResult("invalid_argument", `Unknown tool ${name}.`);
     const t0 = Date.now();
     const parsed = def.parse.safeParse(rawArgs ?? {});
-    if (!parsed.success) return errorResult("invalid_argument", zodMessage(parsed.error));
+    if (!parsed.success) return errorResult("invalid_argument", zodMessage(parsed.error, name));
     const args = parsed.data as Record<string, unknown>;
     const summary = this.summaryOf(name, args);
     const { session, state } = base;

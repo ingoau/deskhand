@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+import sharp from "sharp";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { COMPUTER_TOOLSET } from "@deskhand/mcp";
@@ -29,8 +32,10 @@ const EXPECTED: Record<string, string[]> = {
   template_feedback: ["result", "note"],
   request_human: ["reason"],
   file_put: ["host_path", "desktop_path"],
+  wait: ["duration", "until", "region"],
   file_get: ["desktop_path", "host_path"],
-  desktop_exec: ["command", "timeout"],
+  desktop_exec: ["command", "timeout", "background"],
+  exec_wait: ["job", "timeout", "tail", "cancel"],
   ui_tree: ["window"],
   batch: ["actions"],
 };
@@ -311,6 +316,90 @@ describe("MCP server", () => {
     expect(textOf(ex)).toContain("hello-from-desktop");
     const tree = await client.callTool({ name: "ui_tree", arguments: {} });
     expect(textOf(tree)).toContain("push button");
+    await transport.terminateSession();
+  });
+
+  it("desktop_exec runs background jobs that exec_wait waits for and cancels", async () => {
+    const { client, transport } = await connectMcp(t.url, t.token);
+    // (The profile prelude itself is covered by packages/mcp/test/exec.test.ts.)
+    const plain = await client.callTool({ name: "desktop_exec", arguments: { command: "echo plain-ok" } });
+    expect(textOf(plain)).toContain("plain-ok");
+
+    const start = await client.callTool({ name: "desktop_exec", arguments: { command: "echo first; sleep 1; echo second; exit 3", background: true } });
+    expect(start.isError).toBeFalsy();
+    const job = /background job (j[0-9a-f]{8})/.exec(textOf(start))![1]!;
+    const early = await client.callTool({ name: "exec_wait", arguments: { job, timeout: 0 } });
+    expect(textOf(early)).toContain("still running");
+    const done = await client.callTool({ name: "exec_wait", arguments: { job, timeout: 10 } });
+    expect(textOf(done)).toContain("exit code 3");
+    expect(textOf(done)).toContain("first\nsecond");
+
+    const long = await client.callTool({ name: "desktop_exec", arguments: { command: "sleep 30", background: true } });
+    const job2 = /background job (j[0-9a-f]{8})/.exec(textOf(long))![1]!;
+    await new Promise((res) => setTimeout(res, 300));
+    const cancelled = await client.callTool({ name: "exec_wait", arguments: { job: job2, cancel: true } });
+    expect(textOf(cancelled)).toMatch(/stopped: exit code (143|137)/);
+
+    // The longest timeout must stay within the daemon's 600 s exec cap (the fake enforces it too).
+    const quick = await client.callTool({ name: "desktop_exec", arguments: { command: "true", background: true } });
+    const job3 = /background job (j[0-9a-f]{8})/.exec(textOf(quick))![1]!;
+    const max = await client.callTool({ name: "exec_wait", arguments: { job: job3, timeout: 580 } });
+    expect(textOf(max)).toContain("exit code 0");
+
+    const missing = await client.callTool({ name: "exec_wait", arguments: { job: "j00000000", timeout: 0 } });
+    expect(textOf(missing)).toContain("No background job");
+    const badId = await client.callTool({ name: "exec_wait", arguments: { job: "../etc" } });
+    expect(textOf(badId)).toContain("invalid_argument");
+    await transport.terminateSession();
+  });
+
+  it("wait until change returns when nothing changes within duration", async () => {
+    const { client, transport } = await connectMcp(t.url, t.token);
+    const t0 = Date.now();
+    const w = await client.callTool({ name: "wait", arguments: { duration: 1.5, until: "change", region: [0, 0, 100, 100] } });
+    expect(w.isError).toBeFalsy();
+    expect(textOf(w)).toContain("did not change within 1.5 s");
+    expect(imagesOf(w)).toHaveLength(1);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(1400);
+    const bad = await client.callTool({ name: "wait", arguments: { duration: 1, region: [0, 0, 10, 10] } });
+    expect(textOf(bad)).toContain("region needs until");
+    await transport.terminateSession();
+  });
+
+  it("file_get without host_path returns an image inline", async () => {
+    const { client, transport } = await connectMcp(t.url, t.token);
+    const s = textOf(await client.callTool({ name: "desktop_start", arguments: {} }));
+    const id = /Desktop (\w+) is ready/.exec(s)![1]!;
+    const root = fake().daemonFor(id)!.opts.filesRoot!;
+    const png = await sharp({ create: { width: 40, height: 30, channels: 3, background: "#336699" } }).png().toBuffer();
+    fs.mkdirSync(path.join(root, "tmp"), { recursive: true });
+    fs.writeFileSync(path.join(root, "tmp/shot.png"), png);
+    fs.writeFileSync(path.join(root, "tmp/notes.txt"), "hello");
+    const img = await client.callTool({ name: "file_get", arguments: { desktop_path: "/tmp/shot.png", desktop: id } });
+    expect(img.isError).toBeFalsy();
+    expect(textOf(img)).toContain("40×30 px");
+    expect(imagesOf(img)).toHaveLength(1);
+    const tall = await sharp({ create: { width: 300, height: 9000, channels: 3, background: "#ffffff" } }).png().toBuffer();
+    fs.writeFileSync(path.join(root, "tmp/tall.png"), tall);
+    const big = await client.callTool({ name: "file_get", arguments: { desktop_path: "/tmp/tall.png", desktop: id } });
+    expect(textOf(big)).toContain("300×9000 px, shown at 67×2000");
+    const txt = await client.callTool({ name: "file_get", arguments: { desktop_path: "/tmp/notes.txt", desktop: id } });
+    expect(txt.isError).toBe(true);
+    expect(textOf(txt)).toContain("not a PNG, JPEG, GIF or WebP image");
+    await transport.terminateSession();
+  });
+
+  it("hints at the right argument name for common guesses", async () => {
+    const { client, transport } = await connectMcp(t.url, t.token);
+    const w = await client.callTool({ name: "wait", arguments: { seconds: 2 } });
+    expect(textOf(w)).toContain("use `duration`");
+    const ex = await client.callTool({ name: "desktop_exec", arguments: { command: "true", seconds: 5 } });
+    expect(textOf(ex)).toContain("use `timeout`");
+    const k = await client.callTool({ name: "key", arguments: { key: "Return" } });
+    expect(textOf(k)).toContain("use `text`");
+    await client.callTool({ name: "screenshot", arguments: {} });
+    const b = await client.callTool({ name: "batch", arguments: { actions: [{ action: "left_mouse_down", coordinate: [1, 1] }] } });
+    expect(textOf(b)).toContain("mouse_move");
     await transport.terminateSession();
   });
 

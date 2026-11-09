@@ -80,6 +80,9 @@ export interface AgentImage {
   data: string;
   width: number;
   height: number;
+  /** Set when the image was scaled down to fit `maxSide`. */
+  originalWidth?: number;
+  originalHeight?: number;
 }
 
 export interface StartOptions {
@@ -127,7 +130,8 @@ export interface McpBackend {
 
   recordAction(rec: ActionRecord): void;
   /** Encodes a screenshot for the agent within the configured size budget (PNG, else JPEG). */
-  encodeForAgent(image: Buffer): Promise<AgentImage>;
+  /** Agent-facing PNG/JPEG within the screenshot byte budget; maxSide also scales it down to fit (never up). */
+  encodeForAgent(image: Buffer, opts?: { maxSide?: number }): Promise<AgentImage>;
 
   listTemplates(): TemplateSummary[];
   templateInfo(name: string): TemplateDetail;

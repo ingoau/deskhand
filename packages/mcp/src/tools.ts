@@ -9,6 +9,7 @@ import type { DesktopRef } from "./backend.js";
 import { overlaysFor } from "./describe.js";
 import { formatUiTree, type UiTreeRoot } from "./uitree.js";
 import { hardwareLimits } from "./instructions.js";
+import { JOB_DIR, JOB_ID_RE, MAX_BACKGROUND_COMMAND, jobStartScript, jobWaitScript, newJobId, parseJobStatus, waitForChange, withProfile } from "./exec.js";
 import { text, type Content, type JsonSchema, type ToolContext, type ToolDef, type ToolOutput, type ToolRegistry } from "./registry.js";
 
 // ---------------------------------------------------------------- schema pieces
@@ -38,6 +39,48 @@ const zMods = z
   .optional();
 
 const SETTLE = " Returns the screen once it settles.";
+const INLINE_IMAGE_MAX_BYTES = 25 * 1024 * 1024;
+/** Inline images are scaled to fit this on their longest side (the API rejects images over 8000 px). */
+const INLINE_IMAGE_MAX_SIDE = 2000;
+
+/** Streams a desktop file for file_get's inline mode: refuses big or non-image files without reading them whole. */
+async function readInlineImage(ctx: ToolContext, desktopPath: string): Promise<Buffer> {
+  const res = await ctx.desktop!.daemon.getFileStream(desktopPath, 60_000);
+  const tooBig = (n: number) => new DeskhandError("invalid_argument", `${desktopPath} is ${n} bytes, too big to show inline (max ${INLINE_IMAGE_MAX_BYTES}); pass host_path to copy it.`);
+  const notImage = new DeskhandError("invalid_argument", `${desktopPath} is not a PNG, JPEG, GIF or WebP image; pass host_path to copy it, or read text with desktop_exec.`);
+  const declared = Number(res.headers.get("content-length"));
+  if (declared > INLINE_IMAGE_MAX_BYTES) {
+    await res.body?.cancel().catch(() => undefined);
+    throw tooBig(declared);
+  }
+  const chunks: Buffer[] = [];
+  let total = 0;
+  const reader = res.body!.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(Buffer.from(value));
+      total += value.length;
+      if (total > INLINE_IMAGE_MAX_BYTES) throw tooBig(total);
+      if (chunks.length === 1 && total >= 12 && !imageKind(chunks[0]!)) throw notImage;
+    }
+  } finally {
+    reader.cancel().catch(() => undefined);
+  }
+  const data = Buffer.concat(chunks);
+  if (!imageKind(data)) throw notImage;
+  return data;
+}
+
+/** Magic-byte check for the image types file_get shows inline. */
+function imageKind(b: Buffer): "png" | "jpeg" | "gif" | "webp" | null {
+  if (b.length > 8 && b[0] === 0x89 && b.subarray(1, 4).toString("latin1") === "PNG") return "png";
+  if (b.length > 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return "jpeg";
+  if (b.length > 6 && b.subarray(0, 4).toString("latin1") === "GIF8") return "gif";
+  if (b.length > 12 && b.subarray(0, 4).toString("latin1") === "RIFF" && b.subarray(8, 12).toString("latin1") === "WEBP") return "webp";
+  return null;
+}
 
 // ---------------------------------------------------------------- helpers
 
@@ -529,16 +572,30 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
 
   reg.register({
     name: "file_get",
-    description: "Copy a file out of the desktop to the deskhand host (e.g. a download from ~/Downloads). host_path follows the host's mount rules; its directory must exist.",
+    description:
+      "Copy a file out of the desktop to the deskhand host (e.g. a download from ~/Downloads). host_path follows the host's mount rules; its directory must exist. Leave out host_path to view an image (PNG, JPEG, GIF or WebP, e.g. an `adb exec-out screencap -p` capture) directly in the result instead of copying it.",
     inputSchema: obj(
-      { desktop_path: { type: "string", description: "Absolute path of a file inside the desktop." }, host_path: { type: "string", description: "Absolute destination path on the deskhand host." }, desktop: desktopProp },
-      ["desktop_path", "host_path"],
+      {
+        desktop_path: { type: "string", description: "Absolute path of a file inside the desktop." },
+        host_path: { type: "string", description: "Absolute destination path on the deskhand host. Leave out to return an image inline." },
+        desktop: desktopProp,
+      },
+      ["desktop_path"],
     ),
-    parse: z.object({ desktop_path: z.string().startsWith("/"), host_path: z.string().startsWith("/"), desktop: zDesktop }).strict(),
+    parse: z.object({ desktop_path: z.string().startsWith("/"), host_path: z.string().startsWith("/").optional(), desktop: zDesktop }).strict(),
     scope: "desktop",
     async handler(args, ctx) {
-      const r = await ctx.backend.fileGet(ctx.session, ctx.desktop!.desktop.id, args.desktop_path, args.host_path);
-      return { content: [text(`Copied ${r.bytes} bytes from ${args.desktop_path} (desktop) to ${args.host_path} (host).`)] };
+      if (args.host_path) {
+        const r = await ctx.backend.fileGet(ctx.session, ctx.desktop!.desktop.id, args.desktop_path, args.host_path);
+        return { content: [text(`Copied ${r.bytes} bytes from ${args.desktop_path} (desktop) to ${args.host_path} (host).`)] };
+      }
+      const data = await readInlineImage(ctx, args.desktop_path);
+      const img = await ctx.backend.encodeForAgent(data, { maxSide: INLINE_IMAGE_MAX_SIDE });
+      const size = img.originalWidth && (img.originalWidth !== img.width || img.originalHeight !== img.height) ? `${img.originalWidth}×${img.originalHeight} px, shown at ${img.width}×${img.height}` : `${img.width}×${img.height} px`;
+      return {
+        content: [text(`${args.desktop_path}: ${size}.`), { type: "image", data: img.data, mimeType: img.mimeType }],
+        summary: `file_get ${args.desktop_path} (inline image)`,
+      };
     },
   });
 
@@ -791,51 +848,151 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
 
   reg.register({
     name: "wait",
-    description: "Wait `duration` seconds (up to 300), then return a fresh screenshot.",
-    inputSchema: obj({ duration: { type: "number", minimum: 0, maximum: 300, description: "Seconds to wait (up to 300)." }, desktop: desktopProp }, ["duration"]),
-    parse: z.object({ duration: z.number().min(0).max(300), desktop: zDesktop }).strict(),
+    description:
+      "Wait `duration` seconds (up to 300), then return a fresh screenshot. Input tools already return the screen once it settles, so you rarely need wait right after a click. To wait for something to load or appear, pass until: \"change\": it returns as soon as the screen (or `region`) shows something new (about 1 s at the earliest; a blinking caret or a short animation loop does not count) and settles, and `duration` becomes the longest it waits. For web pages browser_wait_for is more precise.",
+    inputSchema: obj(
+      {
+        duration: { type: "number", minimum: 0, maximum: 300, description: "Seconds to wait (up to 300). With until: the longest to wait." },
+        until: { type: "string", enum: ["change"], description: "\"change\": stop early once the screen (or region) changes." },
+        region: { type: "array", items: { type: "integer", minimum: 0 }, minItems: 4, maxItems: 4, description: "With until: watch only [x0, y0, x1, y1] (top-left and bottom-right corners), e.g. to ignore a clock or an animation elsewhere." },
+        desktop: desktopProp,
+      },
+      ["duration"],
+    ),
+    parse: z
+      .object({
+        duration: z.number().min(0).max(300),
+        until: z.literal("change").optional(),
+        region: z.tuple([z.number().int().min(0), z.number().int().min(0), z.number().int().min(0), z.number().int().min(0)]).optional(),
+        desktop: zDesktop,
+      })
+      .strict()
+      .refine((a) => !a.region || a.until, { message: "region needs until: \"change\"", path: ["region"] })
+      .refine((a) => !a.region || (a.region[2] > a.region[0] && a.region[3] > a.region[1]), { message: "region needs x1 > x0 and y1 > y0", path: ["region"] }),
     scope: "desktop",
     input: true,
     async handler(args, ctx) {
-      return runInput(ctx, { action: "wait", duration: args.duration }, () => `Waited ${args.duration} s.`);
+      if (!args.until) return runInput(ctx, { action: "wait", duration: args.duration }, () => `Waited ${args.duration} s.`);
+      const rd = ctx.desktop!;
+      if (args.region) {
+        checkCoord([args.region[0], args.region[1]], rd.desktop.screen, "region");
+        checkCoord([args.region[2] - 1, args.region[3] - 1], rd.desktop.screen, "region");
+      }
+      // Downscaled whole-screen frames are cheap to grab and still catch any visible change.
+      const grab = async () => Buffer.from((await rd.daemon.screenshot(args.region ? { format: "png", region: args.region } : { format: "png", scale: 0.5 })).data, "base64");
+      const r = await waitForChange({ grab, timeoutMs: args.duration * 1000, signal: ctx.signal });
+      const secs = (r.waitedMs / 1000).toFixed(1);
+      const where = args.region ? "The region" : "The screen";
+      return runInput(ctx, { action: "wait", duration: 0 }, () => (r.changed ? `${where} changed after ${secs} s.` : `${where} did not change within ${args.duration} s.`));
     },
   });
 
   // ------------------------------------------------ beyond pixels
+  /** Runs a shell script through the daemon's /exec, with progress beats for long waits. */
+  async function execRaw(ctx: ToolContext, command: string, timeoutMs: number) {
+    // Long commands (downloads, SDK installs) send progress so MCP clients with an idle timeout
+    // (Claude Code aborts a call silent for 300 s) keep waiting.
+    const started = Date.now();
+    const beat = setInterval(() => ctx.progress(Math.round((Date.now() - started) / 1000), Math.round(timeoutMs / 1000), "Command running"), execProgressMs());
+    try {
+      return await ctx.desktop!.daemon.exec({ command, timeout_ms: timeoutMs, generation: ctx.generation, actor: `mcp:${ctx.actor}` }, LOCK_WAIT_MS + timeoutMs + SLACK_MS, ctx.signal);
+    } finally {
+      clearInterval(beat);
+    }
+  }
+  const cap = (s: string) => (s.length > 40_000 ? s.slice(0, 40_000) + `\n… (${s.length - 40_000} more characters truncated)` : s);
+
   reg.register({
     name: "desktop_exec",
     description:
-      "Run a shell command inside the desktop as the `agent` user (stdin closed) and return its exit code and output: launch apps (`mousepad ~/notes.txt &`, `featherpad &`, `xdg-open file` — end with & so the call returns), read or set the clipboard (`xclip`), inspect files. Returns as soon as the command exits, even if it left background processes. timeout in seconds (default 60, max 600) kills the whole process group. Confined to the desktop container and its mounts.",
+      "Run a shell command inside the desktop as the `agent` user (stdin closed) and return its exit code and output: launch apps (`mousepad ~/notes.txt &`, `featherpad &`, `xdg-open file` — end with & so the call returns), read or set the clipboard (`xclip`), inspect files. Your login profile (~/.profile or ~/.bash_profile) is loaded first, so PATH and variables a template set there are available. Returns as soon as the command exits, even if it left background processes. timeout in seconds (default 60, max 600) kills the whole process group. For anything slow (downloads, SDK installs, builds, recordings) pass background: true instead of a long timeout or a sleep loop: it returns a job id at once and exec_wait waits for the result. Confined to the desktop container and its mounts.",
     inputSchema: obj(
       {
-        command: { type: "string", description: "Shell command (run with bash -c in the agent user's home directory)." },
-        timeout: { type: "number", minimum: 1, maximum: 600, description: "Seconds before the command is killed (default 60)." },
+        command: { type: "string", description: "Shell command (run with bash in the agent user's home directory, after loading the login profile)." },
+        timeout: { type: "number", minimum: 1, maximum: 600, description: "Seconds before the command is killed (default 60). Ignored with background." },
+        background: { type: "boolean", description: "Start the command as a background job and return its id at once; get the exit code and output with exec_wait." },
         desktop: desktopProp,
       },
       ["command"],
     ),
-    parse: z.object({ command: z.string().min(1).max(100_000), timeout: z.number().min(1).max(600).optional(), desktop: zDesktop }).strict(),
+    parse: z.object({ command: z.string().min(1).max(100_000), timeout: z.number().min(1).max(600).optional(), background: z.boolean().optional(), desktop: zDesktop }).strict(),
     scope: "desktop",
     input: true,
     async handler(args, ctx) {
-      const t = Math.round((args.timeout ?? 60) * 1000);
-      // Long commands (downloads, SDK installs) send progress so MCP clients with an idle timeout
-      // (Claude Code aborts a call silent for 300 s) keep waiting.
-      const started = Date.now();
-      const beat = setInterval(() => ctx.progress(Math.round((Date.now() - started) / 1000), Math.round(t / 1000), "Command running"), execProgressMs());
-      let r;
-      try {
-        r = await ctx.desktop!.daemon.exec({ command: args.command, timeout_ms: t, generation: ctx.generation, actor: `mcp:${ctx.actor}` }, LOCK_WAIT_MS + t + SLACK_MS, ctx.signal);
-      } finally {
-        clearInterval(beat);
+      if (args.background) {
+        if (args.command.length > MAX_BACKGROUND_COMMAND) {
+          throw new DeskhandError("invalid_argument", `A background command can be at most ${MAX_BACKGROUND_COMMAND} characters; write longer scripts to a file (file_put) and run that.`);
+        }
+        const id = newJobId();
+        const r = await execRaw(ctx, jobStartScript(id, args.command), 30_000);
+        if (r.exitCode !== 0 || !r.stdout.includes("started")) {
+          throw new DeskhandError("internal", `Could not start the background job (exit ${r.exitCode}): ${cap(r.stderr || r.stdout).trim()}`);
+        }
+        return {
+          content: [text(`Started background job ${id}. Its output goes to ${JOB_DIR}/${id}.log. Call exec_wait with job "${id}" to wait for it and get the exit code and output.`)],
+          summary: `desktop_exec (background ${id}) ${JSON.stringify(args.command.slice(0, 80))}`,
+        };
       }
-      const cap = (s: string) => (s.length > 40_000 ? s.slice(0, 40_000) + `\n… (${s.length - 40_000} more characters truncated)` : s);
+      const t = Math.round((args.timeout ?? 60) * 1000);
+      const r = await execRaw(ctx, withProfile(args.command), t);
       const head = r.timedOut ? `Timed out after ${args.timeout ?? 60} s and was killed.` : r.signal ? `Killed by ${r.signal}.` : `Exit code ${r.exitCode}.`;
       const parts = [head];
       if (r.stdout) parts.push(`stdout:\n${cap(r.stdout)}`);
       if (r.stderr) parts.push(`stderr:\n${cap(r.stderr)}`);
       if (r.truncated) parts.push("(output was truncated by the desktop)");
+      if (r.timedOut) parts.push("For long-running work use background: true and exec_wait.");
       return { content: [text(parts.join("\n"))], summary: `desktop_exec ${JSON.stringify(args.command.slice(0, 80))} → ${r.timedOut ? "timeout" : (r.exitCode ?? r.signal)}` };
+    },
+  });
+
+  reg.register({
+    name: "exec_wait",
+    description:
+      "Wait for a background job started with desktop_exec background: true. Returns as soon as the job exits (with its exit code), or after `timeout` seconds with the job still running — call again to keep waiting. Shows the last `tail` bytes of the job's combined output; the full log is at /tmp/deskhand-jobs/<job>.log. cancel: true stops the job (SIGTERM to its process group, SIGKILL after 5 s); processes that started their own session (e.g. an emulator or adb server) keep running.",
+    inputSchema: obj(
+      {
+        job: { type: "string", description: "Job id returned by desktop_exec with background: true." },
+        timeout: { type: "number", minimum: 0, maximum: 580, description: "Seconds to wait for the job to exit (default 60, max 580; 0 just checks)." },
+        tail: { type: "integer", minimum: 0, maximum: 40_000, description: "Bytes of output to show from the end of the log (default 4000)." },
+        cancel: { type: "boolean", description: "Stop the job, then report its final state." },
+        desktop: desktopProp,
+      },
+      ["job"],
+    ),
+    parse: z
+      .object({
+        job: z.string().regex(JOB_ID_RE, "job is an id like j1a2b3c4d returned by desktop_exec with background: true"),
+        timeout: z.number().min(0).max(580).optional(),
+        tail: z.number().int().min(0).max(40_000).optional(),
+        cancel: z.boolean().optional(),
+        desktop: zDesktop,
+      })
+      .strict(),
+    scope: "desktop",
+    input: true,
+    async handler(args, ctx) {
+      const waitSec = args.cancel ? 0 : (args.timeout ?? 60);
+      // The daemon caps one exec at 600 s; the script ends by wall clock well before its own timeout.
+      const r = await execRaw(ctx, jobWaitScript(args.job, waitSec, args.tail ?? 4000, !!args.cancel), Math.min(600_000, Math.round(waitSec * 1000) + 20_000));
+      if (r.timedOut) {
+        if (args.cancel) throw new DeskhandError("internal", `Stopping job ${args.job} timed out; check it with exec_wait.`);
+        return { content: [text(`Job ${args.job} is still running (the status check itself timed out); call exec_wait again.`)], summary: `exec_wait ${args.job} → running` };
+      }
+      if (r.exitCode !== 0) throw new DeskhandError("internal", `Could not read job ${args.job} (exit ${r.exitCode}): ${cap(r.stderr || r.stdout).trim()}`);
+      const st = parseJobStatus(r.stdout);
+      if (st.state === "missing") throw new DeskhandError("invalid_argument", `No background job ${args.job} on this desktop.`);
+      if (st.state === "running" && args.cancel) throw new DeskhandError("internal", `Could not stop job ${args.job}; it is still running.`);
+      const head =
+        st.state === "lost"
+          ? `Job ${args.job} was lost: the desktop restarted while it ran, so it was stopped without an exit code.`
+          : st.state === "exited"
+          ? `Job ${args.job} ${args.cancel ? "stopped" : "finished"}: exit code ${st.exitCode}.`
+          : `Job ${args.job} is still running after ${waitSec} s; call exec_wait again to keep waiting.`;
+      const shown = Buffer.byteLength(st.tail, "utf8");
+      const parts = [head];
+      if (st.tail) parts.push(`output${st.logBytes > shown ? ` (last ${shown} of ${st.logBytes} bytes)` : ""}:\n${st.tail}`);
+      else parts.push("No output yet.");
+      return { content: [text(parts.join("\n"))], summary: `exec_wait ${args.job} → ${st.state === "exited" ? st.exitCode : "running"}` };
     },
   });
 

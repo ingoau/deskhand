@@ -290,7 +290,14 @@ coordinate, text?)`, `mouse_move(coordinate)`, `left_mouse_down()`, `left_mouse_
 - `cursor_position` returns text like `X=512, Y=384`.
 - Images: the docs name PNG and JPEG; agent-facing results use those (WebP only for dashboard thumbnails).
 - deskhand extras beyond the toolset: input tools return a settled screenshot; `left_click_drag` accepts
-  `duration_ms`/`hold_ms`.
+  `duration_ms`/`hold_ms`; `wait` accepts `until: "change"` and `region`. With `until`, the MCP server polls
+  `/screenshot` (half scale, or the region) every 250 ms; frames seen in the first 1.2 s are the baseline, so a
+  blinking caret or a short animation loop doesn't count. The first unseen frame (or `duration`) ends the wait; so does
+  a new frame from the baseline window that is still steady (last 3 polls identical) when the window ends, so a fast
+  load isn't missed. Then a `wait(0)` input returns the settled screenshot. The polling reads `/screenshot`, which
+  takes no lock; a takeover shows up at that final input.
+- Unknown argument names that agents commonly guess (`seconds`, `key` on `key`, `coordinate` on
+  `left_mouse_down`/`up`, …) get a hint in the `invalid_argument` message (`ARG_HINTS` in `packages/mcp/src/registry.ts`).
 - `batch(actions, desktop?)` (`packages/mcp/src/batch.ts`, not part of the toolset): runs up to 50 steps, each
   `{action: <input tool>, ...its args}` — pixel tools, `wait`, `desktop_exec`, `browser_*`; not `request_human` or
   `batch` — in one call and returns one screenshot at the end. All steps are parsed with their own tool's schema
@@ -584,3 +591,27 @@ User docs: `docs/quickstart.md`, `docs/remote-access.md`, `docs/configuration.md
   and allocates a TTY only when stdin and stdout are terminals, so `deskhand screenshot > shot.png` stays binary-clean.
 - **arm64:** not built locally (no binfmt/QEMU registered on the dev host; CI builds and publishes both
   architectures).
+
+## desktop_exec: login profile, background jobs, inline images
+
+Built in the MCP server on top of the daemon's existing `/exec`, `/screenshot` and `/files`, so desktops from
+snapshot templates that carry an older daemon get them too (`packages/mcp/src/exec.ts`).
+- **Login profile:** every `desktop_exec` command is prefixed with a line that sources the first readable of
+  `~/.bash_profile`, `~/.bash_login`, `~/.profile` (output discarded), so PATH set by templates (Android SDK, JDK,
+  `~/bin`) applies. Session logs showed agents prefixing about 1,000 commands with `. ~/.profile`. Side effects: a
+  profile that runs `exit` ends the command before it starts, `set -e`/`-u` in a profile apply to the command, and
+  bash reports the command's line numbers one higher.
+- **Background jobs:** `desktop_exec background: true` writes the command to `/tmp/deskhand-jobs/<id>.cmd` and
+  starts it under `setsid` (output in `<id>.log`, process group id in `<id>.pid`, exit code in `<id>.exit`), then
+  returns the id (`j` + 8 hex digits) once the pid file exists (commands ≤ 90,000 characters: the base64 has to fit one
+  exec argument). `exec_wait` runs a polling script through `/exec` until `<id>.exit` exists or its wall-clock timeout
+  (≤ 580 s, so the exec stays within the daemon's 600 s cap; progress beats keep Claude Code's 300 s idle limit away)
+  and returns the state and the log's tail; an exec that times out is reported as still running. `cancel` sends
+  SIGTERM to the group, SIGKILL after 5 s, and records 137 if the wrapper died; processes that made their own session
+  (emulator, adb server) survive. `/tmp` is in the container's writable layer, so `<id>.boot` records PID 1's start
+  time: a job without an exit code from an earlier run of the container (restart, template) is reported `lost` and
+  never signalled. Jobs end with the desktop; nothing is tracked in the manager. `exec_wait` goes through `/exec`, so
+  it waits like any input tool while the user has control.
+- **Inline images:** `file_get` without `host_path` reads the file through `/files` (≤ 25 MB), checks the magic bytes
+  (PNG, JPEG, GIF, WebP) while streaming, so big or non-image files are refused without being read whole, and returns
+  it through `encodeForAgent` (same byte budget as screenshots), scaled down to fit 2000 px on its longest side.
