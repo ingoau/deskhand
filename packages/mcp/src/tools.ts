@@ -9,7 +9,7 @@ import type { DesktopRef } from "./backend.js";
 import { overlaysFor } from "./describe.js";
 import { formatUiTree, type UiTreeRoot } from "./uitree.js";
 import { hardwareLimits } from "./instructions.js";
-import { JOB_DIR, JOB_ID_RE, jobStartScript, jobWaitScript, newJobId, parseJobStatus, waitForChange, withProfile } from "./exec.js";
+import { JOB_DIR, JOB_ID_RE, MAX_BACKGROUND_COMMAND, jobStartScript, jobWaitScript, newJobId, parseJobStatus, waitForChange, withProfile } from "./exec.js";
 import { text, type Content, type JsonSchema, type ToolContext, type ToolDef, type ToolOutput, type ToolRegistry } from "./registry.js";
 
 // ---------------------------------------------------------------- schema pieces
@@ -40,6 +40,38 @@ const zMods = z
 
 const SETTLE = " Returns the screen once it settles.";
 const INLINE_IMAGE_MAX_BYTES = 25 * 1024 * 1024;
+/** Inline images are scaled to fit this on their longest side (the API rejects images over 8000 px). */
+const INLINE_IMAGE_MAX_SIDE = 2000;
+
+/** Streams a desktop file for file_get's inline mode: refuses big or non-image files without reading them whole. */
+async function readInlineImage(ctx: ToolContext, desktopPath: string): Promise<Buffer> {
+  const res = await ctx.desktop!.daemon.getFileStream(desktopPath, 60_000);
+  const tooBig = (n: number) => new DeskhandError("invalid_argument", `${desktopPath} is ${n} bytes, too big to show inline (max ${INLINE_IMAGE_MAX_BYTES}); pass host_path to copy it.`);
+  const notImage = new DeskhandError("invalid_argument", `${desktopPath} is not a PNG, JPEG, GIF or WebP image; pass host_path to copy it, or read text with desktop_exec.`);
+  const declared = Number(res.headers.get("content-length"));
+  if (declared > INLINE_IMAGE_MAX_BYTES) {
+    await res.body?.cancel().catch(() => undefined);
+    throw tooBig(declared);
+  }
+  const chunks: Buffer[] = [];
+  let total = 0;
+  const reader = res.body!.getReader();
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(Buffer.from(value));
+      total += value.length;
+      if (total > INLINE_IMAGE_MAX_BYTES) throw tooBig(total);
+      if (chunks.length === 1 && total >= 12 && !imageKind(chunks[0]!)) throw notImage;
+    }
+  } finally {
+    reader.cancel().catch(() => undefined);
+  }
+  const data = Buffer.concat(chunks);
+  if (!imageKind(data)) throw notImage;
+  return data;
+}
 
 /** Magic-byte check for the image types file_get shows inline. */
 function imageKind(b: Buffer): "png" | "jpeg" | "gif" | "webp" | null {
@@ -557,16 +589,11 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
         const r = await ctx.backend.fileGet(ctx.session, ctx.desktop!.desktop.id, args.desktop_path, args.host_path);
         return { content: [text(`Copied ${r.bytes} bytes from ${args.desktop_path} (desktop) to ${args.host_path} (host).`)] };
       }
-      const data = await ctx.desktop!.daemon.getFile(args.desktop_path, 60_000);
-      if (data.length > INLINE_IMAGE_MAX_BYTES) {
-        throw new DeskhandError("invalid_argument", `${args.desktop_path} is ${data.length} bytes, too big to show inline (max ${INLINE_IMAGE_MAX_BYTES}); pass host_path to copy it.`);
-      }
-      if (!imageKind(data)) {
-        throw new DeskhandError("invalid_argument", `${args.desktop_path} is not a PNG, JPEG, GIF or WebP image; pass host_path to copy it, or read text with desktop_exec.`);
-      }
-      const img = await ctx.backend.encodeForAgent(data);
+      const data = await readInlineImage(ctx, args.desktop_path);
+      const img = await ctx.backend.encodeForAgent(data, { maxSide: INLINE_IMAGE_MAX_SIDE });
+      const size = img.originalWidth && (img.originalWidth !== img.width || img.originalHeight !== img.height) ? `${img.originalWidth}×${img.originalHeight} px, shown at ${img.width}×${img.height}` : `${img.width}×${img.height} px`;
       return {
-        content: [text(`${args.desktop_path}: ${img.width}×${img.height} px.`), { type: "image", data: img.data, mimeType: img.mimeType }],
+        content: [text(`${args.desktop_path}: ${size}.`), { type: "image", data: img.data, mimeType: img.mimeType }],
         summary: `file_get ${args.desktop_path} (inline image)`,
       };
     },
@@ -893,6 +920,9 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
     input: true,
     async handler(args, ctx) {
       if (args.background) {
+        if (args.command.length > MAX_BACKGROUND_COMMAND) {
+          throw new DeskhandError("invalid_argument", `A background command can be at most ${MAX_BACKGROUND_COMMAND} characters; write longer scripts to a file (file_put) and run that.`);
+        }
         const id = newJobId();
         const r = await execRaw(ctx, jobStartScript(id, args.command), 30_000);
         if (r.exitCode !== 0 || !r.stdout.includes("started")) {
@@ -918,11 +948,11 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
   reg.register({
     name: "exec_wait",
     description:
-      "Wait for a background job started with desktop_exec background: true. Returns as soon as the job exits (with its exit code), or after `timeout` seconds with the job still running — call again to keep waiting. Shows the last `tail` bytes of the job's combined output; the full log is at /tmp/deskhand-jobs/<job>.log. cancel: true stops the job (SIGTERM to its process group, SIGKILL after 5 s).",
+      "Wait for a background job started with desktop_exec background: true. Returns as soon as the job exits (with its exit code), or after `timeout` seconds with the job still running — call again to keep waiting. Shows the last `tail` bytes of the job's combined output; the full log is at /tmp/deskhand-jobs/<job>.log. cancel: true stops the job (SIGTERM to its process group, SIGKILL after 5 s); processes that started their own session (e.g. an emulator or adb server) keep running.",
     inputSchema: obj(
       {
         job: { type: "string", description: "Job id returned by desktop_exec with background: true." },
-        timeout: { type: "number", minimum: 0, maximum: 590, description: "Seconds to wait for the job to exit (default 60, max 590; 0 just checks)." },
+        timeout: { type: "number", minimum: 0, maximum: 580, description: "Seconds to wait for the job to exit (default 60, max 580; 0 just checks)." },
         tail: { type: "integer", minimum: 0, maximum: 40_000, description: "Bytes of output to show from the end of the log (default 4000)." },
         cancel: { type: "boolean", description: "Stop the job, then report its final state." },
         desktop: desktopProp,
@@ -932,7 +962,7 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
     parse: z
       .object({
         job: z.string().regex(JOB_ID_RE, "job is an id like j1a2b3c4d returned by desktop_exec with background: true"),
-        timeout: z.number().min(0).max(590).optional(),
+        timeout: z.number().min(0).max(580).optional(),
         tail: z.number().int().min(0).max(40_000).optional(),
         cancel: z.boolean().optional(),
         desktop: zDesktop,
@@ -942,12 +972,20 @@ export function registerTools(reg: ToolRegistry, getTemplates: () => TemplateSum
     input: true,
     async handler(args, ctx) {
       const waitSec = args.cancel ? 0 : (args.timeout ?? 60);
-      const r = await execRaw(ctx, jobWaitScript(args.job, waitSec, args.tail ?? 4000, !!args.cancel), Math.round(waitSec * 1000) + 15_000);
+      // The daemon caps one exec at 600 s; the script ends by wall clock well before its own timeout.
+      const r = await execRaw(ctx, jobWaitScript(args.job, waitSec, args.tail ?? 4000, !!args.cancel), Math.min(600_000, Math.round(waitSec * 1000) + 20_000));
+      if (r.timedOut) {
+        if (args.cancel) throw new DeskhandError("internal", `Stopping job ${args.job} timed out; check it with exec_wait.`);
+        return { content: [text(`Job ${args.job} is still running (the status check itself timed out); call exec_wait again.`)], summary: `exec_wait ${args.job} → running` };
+      }
       if (r.exitCode !== 0) throw new DeskhandError("internal", `Could not read job ${args.job} (exit ${r.exitCode}): ${cap(r.stderr || r.stdout).trim()}`);
       const st = parseJobStatus(r.stdout);
       if (st.state === "missing") throw new DeskhandError("invalid_argument", `No background job ${args.job} on this desktop.`);
+      if (st.state === "running" && args.cancel) throw new DeskhandError("internal", `Could not stop job ${args.job}; it is still running.`);
       const head =
-        st.state === "exited"
+        st.state === "lost"
+          ? `Job ${args.job} was lost: the desktop restarted while it ran, so it was stopped without an exit code.`
+          : st.state === "exited"
           ? `Job ${args.job} ${args.cancel ? "stopped" : "finished"}: exit code ${st.exitCode}.`
           : `Job ${args.job} is still running after ${waitSec} s; call exec_wait again to keep waiting.`;
       const shown = Buffer.byteLength(st.tail, "utf8");

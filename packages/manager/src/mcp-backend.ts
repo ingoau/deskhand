@@ -290,9 +290,9 @@ export class ManagerMcpBackend implements McpBackend {
     this.desktops.setLastAction(rec.desktopId, { tool: rec.tool, summary: rec.summary, at });
   }
 
-  async encodeForAgent(image: Buffer) {
-    const img = await encodeForAgent(image, this.cfg.screenshot);
-    return { mimeType: img.mime, data: img.data.toString("base64"), width: img.width, height: img.height };
+  async encodeForAgent(image: Buffer, opts: { maxSide?: number } = {}) {
+    const img = await encodeForAgent(image, { ...this.cfg.screenshot, maxSide: opts.maxSide });
+    return { mimeType: img.mime, data: img.data.toString("base64"), width: img.width, height: img.height, originalWidth: img.originalWidth, originalHeight: img.originalHeight };
   }
 
   // ---------------------------------------------------------------- templates

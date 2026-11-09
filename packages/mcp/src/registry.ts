@@ -122,6 +122,9 @@ const ARG_HINTS: Record<string, string> = {
   "left_mouse_down.coordinate": "it presses at the current pointer position; move there first with mouse_move",
   "left_mouse_up.coordinate": "it releases at the current pointer position; move there first with mouse_move",
   "desktop_exec.cmd": "use `command`",
+  "desktop_exec.seconds": "use `timeout` (seconds)",
+  "exec_wait.seconds": "use `timeout` (seconds)",
+  "exec_wait.id": "use `job`",
   "wait.timeout": "use `duration` (seconds)",
 };
 

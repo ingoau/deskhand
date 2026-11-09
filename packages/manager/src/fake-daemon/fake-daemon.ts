@@ -446,6 +446,8 @@ export class FakeDaemon {
       }
       case "POST /exec": {
         const body = await this.jsonBody(req);
+        // Same cap as the real daemon's ExecRequest.
+        if (body.timeout_ms !== undefined && Number(body.timeout_ms) > 600_000) return this.err(res, 400, "invalid_argument", "timeout_ms: Too big: expected number to be <=600000");
         const out = await this.queued(res, body.generation as number | undefined, () => this.exec(String(body.command ?? ""), Number(body.timeout_ms ?? 60_000)));
         if (out) this.send(res, 200, out);
         return;

@@ -44,15 +44,33 @@ describe("background job scripts", () => {
     expect(st.logBytes).toBe(Buffer.byteLength(st.tail));
   });
 
-  it("cancel stops the whole process group", () => {
+  it("cancel right after start stops the whole process group", () => {
     const id = newJobId();
     bash(jobStartScript(id, "sleep 60 & sleep 60; echo never"));
-    bash("sleep 0.3");
     const st = parseJobStatus(bash(jobWaitScript(id, 0, 1000, true)));
     expect(st.state).toBe("exited");
     expect([143, 137]).toContain(st.exitCode);
     const pgid = fs.readFileSync(`/tmp/deskhand-jobs/${id}.pid`, "utf8").trim();
     expect(bash(`pgrep -g ${pgid} || true`).trim()).toBe("");
+  });
+
+  it("waits by wall clock and reports a still-running job", () => {
+    const id = newJobId();
+    bash(jobStartScript(id, "sleep 5"));
+    const t0 = Date.now();
+    expect(parseJobStatus(bash(jobWaitScript(id, 1, 100, false))).state).toBe("running");
+    expect(Date.now() - t0).toBeLessThan(3000);
+    bash(jobWaitScript(id, 0, 0, true));
+  });
+
+  it("reports a job from an earlier run of the container as lost", () => {
+    const id = newJobId();
+    bash(jobStartScript(id, "sleep 30"));
+    fs.writeFileSync(`/tmp/deskhand-jobs/${id}.boot`, "earlier-run\n");
+    expect(parseJobStatus(bash(jobWaitScript(id, 5, 100, false))).state).toBe("lost");
+    // Cancel must not signal a pid from another run; clean up the real one directly.
+    expect(parseJobStatus(bash(jobWaitScript(id, 0, 100, true))).state).toBe("lost");
+    bash(`kill -KILL -$(cat /tmp/deskhand-jobs/${id}.pid) 2>/dev/null; true`);
   });
 
   it("reports missing jobs and refuses bad ids", () => {
@@ -89,11 +107,24 @@ describe("waitForChange", () => {
     expect(r).toEqual({ changed: false, waitedMs: 2000 });
   });
 
-  it("a change within the baseline window is part of the baseline", async () => {
+  it("a change during the baseline window that holds steady counts once the window ends", async () => {
     const c = clock();
     let i = 0;
-    // Changes once at 250 ms (inside the baseline), then stays: no "change" reported.
-    const r = await waitForChange({ grab: async () => Buffer.from(i++ === 0 ? "x" : "y"), timeoutMs: 3000, baselineMs: 1200, ...c });
+    // Changes at 250 ms (inside the baseline), then stays.
+    const r = await waitForChange({ grab: async () => Buffer.from(i++ === 0 ? "x" : "y"), timeoutMs: 30_000, baselineMs: 1200, ...c });
+    expect(r).toEqual({ changed: true, waitedMs: 1250 });
+  });
+
+  it("a blinking caret during and after the baseline is not a change", async () => {
+    const c = clock();
+    let i = 0;
+    const r = await waitForChange({ grab: async () => Buffer.from(Math.floor(i++ / 2) % 2 ? "on" : "off"), timeoutMs: 5000, baselineMs: 1200, ...c });
     expect(r.changed).toBe(false);
+  });
+
+  it("stops when aborted", async () => {
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(new Error("stop")), 50);
+    await expect(waitForChange({ grab: async () => Buffer.from("s"), timeoutMs: 10_000, signal: ac.signal })).rejects.toThrow("stop");
   });
 });

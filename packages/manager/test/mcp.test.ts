@@ -340,6 +340,12 @@ describe("MCP server", () => {
     const cancelled = await client.callTool({ name: "exec_wait", arguments: { job: job2, cancel: true } });
     expect(textOf(cancelled)).toMatch(/stopped: exit code (143|137)/);
 
+    // The longest timeout must stay within the daemon's 600 s exec cap (the fake enforces it too).
+    const quick = await client.callTool({ name: "desktop_exec", arguments: { command: "true", background: true } });
+    const job3 = /background job (j[0-9a-f]{8})/.exec(textOf(quick))![1]!;
+    const max = await client.callTool({ name: "exec_wait", arguments: { job: job3, timeout: 580 } });
+    expect(textOf(max)).toContain("exit code 0");
+
     const missing = await client.callTool({ name: "exec_wait", arguments: { job: "j00000000", timeout: 0 } });
     expect(textOf(missing)).toContain("No background job");
     const badId = await client.callTool({ name: "exec_wait", arguments: { job: "../etc" } });
@@ -373,6 +379,10 @@ describe("MCP server", () => {
     expect(img.isError).toBeFalsy();
     expect(textOf(img)).toContain("40×30 px");
     expect(imagesOf(img)).toHaveLength(1);
+    const tall = await sharp({ create: { width: 300, height: 9000, channels: 3, background: "#ffffff" } }).png().toBuffer();
+    fs.writeFileSync(path.join(root, "tmp/tall.png"), tall);
+    const big = await client.callTool({ name: "file_get", arguments: { desktop_path: "/tmp/tall.png", desktop: id } });
+    expect(textOf(big)).toContain("300×9000 px, shown at 67×2000");
     const txt = await client.callTool({ name: "file_get", arguments: { desktop_path: "/tmp/notes.txt", desktop: id } });
     expect(txt.isError).toBe(true);
     expect(textOf(txt)).toContain("not a PNG, JPEG, GIF or WebP image");
@@ -383,6 +393,8 @@ describe("MCP server", () => {
     const { client, transport } = await connectMcp(t.url, t.token);
     const w = await client.callTool({ name: "wait", arguments: { seconds: 2 } });
     expect(textOf(w)).toContain("use `duration`");
+    const ex = await client.callTool({ name: "desktop_exec", arguments: { command: "true", seconds: 5 } });
+    expect(textOf(ex)).toContain("use `timeout`");
     const k = await client.callTool({ name: "key", arguments: { key: "Return" } });
     expect(textOf(k)).toContain("use `text`");
     await client.callTool({ name: "screenshot", arguments: {} });

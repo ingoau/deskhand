@@ -6,6 +6,8 @@ export interface AgentImageOptions {
   /** First JPEG quality to try when PNG is over budget. */
   jpegQuality: number;
   minJpegQuality: number;
+  /** Scale down (never up) so the longest side fits; screenshots leave it unset to keep screen pixels. */
+  maxSide?: number;
 }
 
 export interface EncodedImage {
@@ -13,6 +15,9 @@ export interface EncodedImage {
   data: Buffer;
   width: number;
   height: number;
+  /** Set when maxSide scaled the image down. */
+  originalWidth?: number;
+  originalHeight?: number;
 }
 
 function isPng(b: Buffer) {
@@ -28,8 +33,12 @@ function isJpeg(b: Buffer) {
  * screenshot pixels stay equal to screen pixels.
  */
 export async function encodeForAgent(input: Buffer, opts: AgentImageOptions): Promise<EncodedImage> {
-  const img = sharp(input);
-  const meta = await img.metadata();
+  const meta = await sharp(input).metadata();
+  if (opts.maxSide && Math.max(meta.width ?? 0, meta.height ?? 0) > opts.maxSide) {
+    const scaled = await sharp(input).resize({ width: opts.maxSide, height: opts.maxSide, fit: "inside" }).png().toBuffer();
+    const out = await encodeForAgent(scaled, { ...opts, maxSide: undefined });
+    return { ...out, originalWidth: meta.width, originalHeight: meta.height };
+  }
   const width = meta.width ?? 0;
   const height = meta.height ?? 0;
   if (isPng(input) && input.length <= opts.maxBytes) return { mime: "image/png", data: input, width, height };
